@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Executa o build recompilado. Uso: scripts/run.sh [args extras]
+# Runs the recompiled game. Usage: scripts/run.sh [extra args]
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export LD_LIBRARY_PATH="$ROOT/tools/rexglue/linux-amd64/lib:${LD_LIBRARY_PATH:-}"

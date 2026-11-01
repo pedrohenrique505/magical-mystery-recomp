@@ -1,5 +1,5 @@
-"""Calcula o tamanho (ate o 1o blr/bctr/b) de cada endereco listado em <addrs.txt>.
-Uso: size_of.py <project_dir> <project_name> <addrs.txt> <out.txt>   (saida: "0xADDR size")"""
+"""Computes the size (up to the first blr/bctr/b) of each address listed in <addrs.txt>.
+Usage: size_of.py <project_dir> <project_name> <addrs.txt> <out.txt>   (output: "0xADDR size ok")"""
 import sys, pyghidra
 pyghidra.start()
 from ghidra.program.model.address import AddressSet

@@ -1,10 +1,10 @@
-"""Laco automatico: roda `rexglue codegen`, le os alvos "target not in any function",
-calcula o tamanho de cada um no Ghidra (size_of.py) e os acrescenta a
-[entrypoint.functions] do manifesto. Repete ate o codegen passar (max 8 rodadas).
+"""Automatic loop: runs `rexglue codegen`, reads the "target not in any function" errors,
+computes each target's size in Ghidra (size_of.py) and appends it to
+[entrypoint.functions] in the manifest. Repeats until codegen passes (max 8 rounds).
 
-Uso: resolve_orphans.py <workdir>
-  <workdir>/ghproj deve conter uma COPIA do projeto Ghidra (beatles-rock-band.gpr/.rep),
-  para nao conflitar com o Ghidra aberto. Requer .venv com pyghidra.
+Usage: resolve_orphans.py <workdir>
+  <workdir>/ghproj must contain a COPY of the Ghidra project (beatles-rock-band.gpr/.rep)
+  so it does not conflict with an open Ghidra. Requires .venv with pyghidra.
 """
 import os, re, subprocess, sys
 

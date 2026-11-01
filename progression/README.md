@@ -1,10 +1,10 @@
-# Progressão do projeto
+# Project progression
 
-| Arquivo | Para quê |
+| File | Purpose |
 |---|---|
-| [`status.md`](status.md) | Estado atual: o que funciona, o que não funciona, números. |
-| [`next-steps.md`](next-steps.md) | Roadmap priorizado do que fazer em seguida. |
-| [`known-issues.md`](known-issues.md) | Problemas abertos, com sintoma, causa conhecida e como investigar. |
-| [`log.md`](log.md) | Diário cronológico: marcos, decisões e o porquê delas. |
+| [`status.md`](status.md) | Current state: what works, what doesn't, key numbers. |
+| [`next-steps.md`](next-steps.md) | Prioritized roadmap of what to do next. |
+| [`known-issues.md`](known-issues.md) | Open problems, each with symptom, known cause and how to investigate. |
+| [`log.md`](log.md) | Chronological journal: milestones and decisions, with the reasoning behind them. |
 
-Atualize `status.md` e `next-steps.md` ao fim de cada sessão de trabalho, e acrescente uma entrada em `log.md` quando algo relevante for resolvido ou decidido. Instruções para agentes ficam em `../CLAUDE.md`, sem estado do projeto.
+Update `status.md` and `next-steps.md` at the end of every work session, and add a `log.md` entry whenever something significant is resolved or decided. Agent instructions live in `../CLAUDE.md` and contain no project state.

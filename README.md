@@ -4,7 +4,7 @@ Static recompilation of *The Beatles: Rock Band* (Xbox 360) into native Linux C+
 
 > **Bring your own disc.** This repository contains **no game code or assets**. You need your own legitimate copy of the game, dumped from a disc you own. Nothing from the game is distributed here, and `game/`, `*.iso` and `*.xex` are git-ignored.
 
-> **Status:** the game boots, opens a window, brings up Vulkan and audio, and runs without aborting. Gameplay is not yet validated and USB instruments are not implemented. See [`progression/`](progression/) for details (written in Portuguese).
+> **Status:** the game boots, opens a window, brings up Vulkan and audio, and runs without aborting. Gameplay is not yet validated and USB instruments are not implemented. See [`progression/`](progression/) for details.
 
 ## Legal
 
@@ -64,7 +64,7 @@ The run log is written to `build/run.log`.
 | `tools/` | Prebuilt ReXGlue SDK and the Ghidra XEX loader zip (git-ignored, see Setup). |
 | `third_party/` | Reference repositories, not built (git-ignored, see Setup). |
 | `game/` | Your extracted game (git-ignored). |
-| `progression/` | Current status, next steps, known issues and a development log (Portuguese). |
+| `progression/` | Current status, next steps, known issues and a development log. |
 | `CLAUDE.md` | Guidance for AI coding agents working in this repository. |
 
 ## Credits

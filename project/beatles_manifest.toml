@@ -10,12 +10,12 @@ file_path = "../game/default.xex"
 out_directory_path = "generated/default"
 includes = []
 
-# Thunk de 4 bytes (`b 0x8264E060`) alvo de `b` em 0x8264E7BC; a análise automática não o reconhecia.
+# 4-byte thunk (`b 0x8264E060`), target of a `b` at 0x8264E7BC; automatic analysis did not recognize it.
 [entrypoint.functions]
 0x8264E3F0 = { name = "thunk_8264E3F0", size = 4 }
 0x82648980 = { name = "thunk_82648980", size = 24 }
 
-# Alvos de vtable/dados e cadeias de thunks sem funcao registrada (scripts/find_orphans.py + scripts/size_of.py via PyGhidra)
+# Vtable/data targets and thunk chains with no registered function (scripts/find_orphans.py + scripts/size_of.py via PyGhidra)
 0x82317900 = { name = "orphan_82317900" }
 0x823179A0 = { name = "orphan_823179A0" }
 0x82317B34 = { name = "orphan_82317B34", size = 32 }

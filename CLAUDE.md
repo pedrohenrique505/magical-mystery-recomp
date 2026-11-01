@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Static recompilation of *Rock Band: The Beatles* (Xbox 360, PowerPC, XEX2) into native Linux C++, using the **prebuilt ReXGlue SDK v0.10.0**. There is no hand-written game code: `project/generated/` is machine output from `rexglue codegen`. Human-authored work is the manifest (`project/beatles_manifest.toml`), the tiny host app (`project/src/`), the helper scripts, and any runtime/kernel/GPU work that ends up needed.
 
-Project status, roadmap and known issues live in `README.md` and `progression/`, not here.
+Project status, roadmap and known issues live in `README.md` and `progression/`, not here. Update `progression/` (`status.md`, `next-steps.md`, `known-issues.md`, and a `log.md` entry) when you finish meaningful work.
+
+**All documentation, comments, commit messages and script docstrings are written in English**, even if the user converses in Portuguese.
 
 ## Commands
 

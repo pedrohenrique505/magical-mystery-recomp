@@ -1,7 +1,10 @@
-"""Lista palavras de 32 bits (big-endian) em dados que apontam para codigo
-nao coberto por nenhuma funcao (Ghidra ou rexglue).
+r"""Lists big-endian 32-bit words in data sections that point into code not covered by any
+function (neither Ghidra's nor rexglue's), then follows trailing `b` chains (thunks that
+jump to another stub). Sizes stop at the first blr/bctr/b, so only trust them for thunks.
 
-Uso: find_orphans.py <project_dir> <project_name> <registered.txt> <out.txt>
+Usage: find_orphans.py <project_dir> <project_name> <registered.txt> <out.txt>
+  registered.txt: addresses already registered by rexglue, one per line, extracted with
+  grep -hoE "\{ 0x[0-9A-F]{8}, " project/generated/default/beatles_init.cpp | grep -oE "0x[0-9A-F]{8}"
 """
 import sys
 import pyghidra
@@ -85,7 +88,7 @@ with pyghidra.open_program(
             continue
         size, ok, note, tail = analyze(v)
         results[v] = (size, ok, note)
-        # fecho transitivo: `b` final para alvo sem funcao -> tambem e orfao
+        # transitive closure: a trailing `b` to an uncovered target makes that target an orphan too
         if tail is not None and lo <= tail <= hi and not tail & 3 and tail not in reg \
                 and tail not in results and fm.getFunctionContaining(addr(tail)) is None:
             targets.setdefault(tail, [])

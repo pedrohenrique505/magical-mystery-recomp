@@ -1,0 +1,17 @@
+build/
+game/
+*.iso
+*.xex
+*.o
+*.gpr
+*.rep/
+*.lock
+*.lock~
+.venv/
+project/generated/
+tools/rexglue/
+tools/rexglue-dl/
+third_party/
+__pycache__/
+.claude/settings.local.json
+tools/xexloader/

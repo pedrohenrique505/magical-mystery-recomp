@@ -65,7 +65,7 @@ The run log is written to `build/run.log`.
 | `third_party/` | Reference repositories, not built (git-ignored, see Setup). |
 | `game/` | Your extracted game (git-ignored). |
 | `progression/` | Current status, next steps, known issues and a development log. |
-| `CLAUDE.md` | Guidance for AI coding agents working in this repository. |
+| `AGENTS.md` | Guidance for AI coding agents working in this repository (`CLAUDE.md` is a symlink to it). |
 
 ## Credits
 

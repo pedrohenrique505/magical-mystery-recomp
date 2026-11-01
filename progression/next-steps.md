@@ -31,5 +31,5 @@ Suggested order, from cheapest/most informative to most expensive.
 
 ## 7. Project quality
 - [ ] Push the repository to GitHub and pick a license.
-- [ ] Document the manifest quirks discovered so far (see `CLAUDE.md`) where other ReXGlue users can find them.
+- [ ] Document the manifest quirks discovered so far (see `AGENTS.md`) where other ReXGlue users can find them.
 - [ ] Consider contributing fixes or reports back to ReXGlue (vtables without RTTI).

@@ -72,3 +72,12 @@
 - Cause: the SDK always creates an ImGui achievement toast; any UI drawer makes the presenter paint from the UI thread, and those paints queue behind the game's GPU work with 3 submissions in flight. Fix: `CreateAchievementNotificationDialog` returns `nullptr`, so the GPU command thread presents each frame itself. Gameplay: painted = refreshed, 0 dropped; intro GPU busy 93% → 77%. User: "much better visually, still some frame drops".
 - Remaining: guest-side hitches (one 40-150 ms swap every 2-6 s), not correlated with pipeline creation. Next session starts there.
 - Gotcha found on the way: SDK boolean flags parse `--name false` as *true* (CLI11 flag plus a positional); use `--no-name`. Documented in `AGENTS.md`.
+
+## 2026-11-02 — Frame pacing locked to vsync; FSI render targets
+
+- New measurement tools: `--hitch_log_ms` (`project/src/hitch_tracer.cpp`: per-thread CPU time and kernel waits for every long guest frame), host GPU busy/clock/temperature/PPT in `--perf_log` (amdgpu sysfs), `amdgpu_top` block counters, and RenderDoc captures of slow frames (`--capture_slow_frames`, `project/src/gpu_capture.cpp`).
+- The guest itself runs songs at a clean 60 fps; the stutter was host-side. Earlier tests had been on battery, where the iGPU is capped at ~400-650 MHz.
+- Cause A: the guest vblank is a free-running SDK timer; with FIFO, frames drifted against the real vsync and were dropped/repeated, and late GPU frames halved the rate to 30. `--present_pacing` makes `VdSwap` wait for the previous frame's paint: 0 dropped frames in a full song, dips 40-57 fps instead of 30.
+- Cause B: the GPU (pixel shading + texture fetch bound). A RenderDoc capture showed 55% of GPU time in render-target transfer rectangles of the host-render-target EDRAM emulation. `--render_target_path_vulkan=fsi` removes them: song windows below 55 fps 16% → 6.5%. User: drops reduced, still not a locked 60.
+- FIFO, pacing and FSI are now defaults in `scripts/run.sh` (env vars, overridable on the command line).
+- KI-15: the SDK `dlopen`s `librenderdoc.so` to "detect" RenderDoc, which injects it into every run once installed (no window on Wayland). Fixed with `project/src/renderdoc_guard.cpp`. Lesson: headless RenderDoc replays of gameplay captures saturate the iGPU and freeze the desktop; the user drove the GUI instead.

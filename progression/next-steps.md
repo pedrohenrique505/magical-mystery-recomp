@@ -2,43 +2,31 @@
 
 ## >>> START HERE: top priority for the next session <<<
 
-**Gameplay hitches (KI-14, second half).** The presenter no longer drops frames: since the
-achievement toast was disabled, every guest frame is painted (`--perf_log`: painted = refreshed,
-0 dropped). What is left happens *in the guest*: one `VdSwap` interval of 40-60 ms (up to 150 ms)
-every 2-6 s, plus short stretches of 23-40 ms frames. They do not line up with pipeline creation.
-Plan, in order:
+**More GPU headroom (KI-14, last part).** Pacing is solved (`--present_pacing`, FIFO) and the
+FSI render-target path removed the EDRAM transfer draws; `scripts/run.sh` enables all three by
+default. Songs now average ~59 fps, but the iGPU is still ~85% busy at ~1.4 GHz and saturates on
+heavy camera shots and the pre-song venue fly-through (~49 fps), so frames occasionally miss
+vsync. Plan, in order:
 
-1. **Timestamp each hitch.** Log every swap interval > 30 ms with a timestamp (perf_hooks.cpp)
-   and correlate with `--wait_profile` (file reads, kernel waits per guest thread), the SDK
-   command processor's waits for GPU submissions, and texture uploads. Find out whether the main
-   thread was blocked (I/O, a lock, the GPU) or busy.
-2. **Reduce GPU load** if the hitches turn out to be GPU waits: the iGPU is still the busiest part.
-   Options to A/B (remember `--no-name` to turn a boolean off): `--direct_host_resolve`,
-   `--no-readback_memexport`, `--async_shader_compilation`, `--resolution_scale`,
-   `--texture_cache_memory_limit_*`, `--present_effect`. Consider RenderDoc
-   (`renderdoc_api.h` in the SDK) to see what dominates a gameplay frame.
-3. **Present pacing:** the swapchain uses IMMEDIATE (tearing allowed, no vsync). Try FIFO
-   (`--no-vulkan_allow_present_mode_immediate --no-vulkan_allow_present_mode_mailbox
-   --no-vulkan_allow_present_mode_fifo_relaxed`); FIFO counts as implicit vsync, which moves
-   painting back to the UI thread, so check the dropped counter.
-4. **Cheap CPU win:** the SDK audio worker burns ~80% of a core polling in
-   `PosixConditionBase::WaitMultiple` (1 ms alertable slices + trylock).
-5. Later: `-O2` for the generated code only if the guest CPU becomes the bottleneck.
+1. **New RenderDoc capture on the FSI path** of a slow frame, to see the new cost split (the
+   user drives the qrenderdoc GUI: Performance Counter Viewer, export CSV; see KI-15 for how to
+   capture). Before FSI: 55% transfer rectangles, 23% scene, 15% compute.
+2. **Force the GPU clock**: `echo high | sudo tee /sys/class/drm/card1/device/power_dpm_force_performance_level`
+   (back with `auto`). The average sclk in songs is ~1.4 GHz out of 1.5; DPM ramps late on
+   sudden heavy frames.
+3. **CPU power waste** shares the APU power budget (PPT ~35-40 W in songs): the SDK audio worker
+   polls `WaitMultiple` at ~80% of a core; the guest main thread spins in the D3D wait loop.
+4. Cheap flags still untested in gameplay on FSI: `--no-readback_memexport`,
+   `--no-gamma_render_target_as_unorm16` (no effect on the intro on the old path).
 
-**How to measure** (every change, before and after):
-- `scripts/run.sh --perf_log true` — every 2 s: guest fps and swap-interval histogram, audio
-  pacing, and the host side (`refreshed / painted / new / dropped`, new-frame intervals).
-  At a clean 60 fps everything is in the `10-23` bucket. **Do not use `--show_fps` or F3/F4
-  while measuring**: ImGui overlays switch the presenter back to UI-thread painting.
-- The game window must be visible: Hyprland throttles hidden windows, which skews present
-  numbers (an intro-only run without user input is fine if the window is on screen).
-- Distinct frames that actually reach the screen: record gameplay with
-  `gpu-screen-recorder -w eDP-1 -f 60 -fm cfr -k h264 -o build/capture.mp4`, then count unique
-  frames per second with `ffmpeg -i build/capture.mp4 -vf "scale=480:-1,mpdecimate=hi=64*4:lo=64*2:frac=0.1,showinfo" -an -f null -`
-  (group the `pts_time` values by second). Run heavy analyses in the background.
-- `scripts/profile.sh` — perf record + host GPU load (`build/gpu_busy.log`).
-- Getting to gameplay needs the user with a gamepad (intro skip, party, song); plan runs so each
-  one answers a specific question.
+**How to measure** (every change, on AC power, same song):
+- `scripts/run.sh --perf_log=true --hitch_log_ms=35`: per 2 s guest fps, swap histogram,
+  presenter refreshed/painted/new/dropped, pacing timeouts, GPU busy/clock/temperature/PPT.
+  Compare song segments with the summary script approach used on 2026-11-02 (mean shown fps,
+  share of windows < 55 fps). No `--show_fps`/F3/F4 while measuring.
+- `amdgpu_top -J -s 250` in the background records per-block GPU counters (installed).
+- The intro is **not** a valid GPU benchmark (a Bink movie; flags that matter in gameplay do
+  nothing there). Gameplay runs need the user; announce automated runs ("don't touch").
 
 ---
 
@@ -52,7 +40,9 @@ Suggested order, from cheapest/most informative to most expensive.
 - [x] Song list after creating a party (KI-12, `XNetRandom`). A full song plays.
 - [x] Gameplay audio crackling / slow-motion feel: SDL pulled 4 frames per callback, fixed with `SDL_AUDIO_DEVICE_SAMPLE_FRAMES=256` (KI-13).
 - [x] Gameplay showed ~30 distinct fps: the presenter dropped half the frames because the SDK's achievement toast forced UI-thread painting (KI-14).
-- [ ] **Gameplay hitches (top priority, KI-14):** see "START HERE" at the top of this file.
+- [x] Gameplay frame pacing (KI-14): `--present_pacing` + FIFO, 0 dropped frames.
+- [x] GPU: FSI render-target path removes EDRAM transfer draws (KI-14).
+- [ ] **More GPU headroom (top priority, KI-14):** see "START HERE" at the top of this file.
 - [ ] Remove or gate the `--debug_probe` watch list once it is no longer needed (it only reads memory and is off by default).
 
 ## 2. Stability of the recompiled code

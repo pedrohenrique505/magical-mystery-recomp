@@ -1,10 +1,10 @@
 # Current status
 
-_Last updated: 2026-11-01 (late night)_
+_Last updated: 2026-11-02_
 
 ## Summary
 
-The recompiled game **boots, plays the intro, navigates menus, creates a party, lists songs and plays a full song** with a gamepad emulating a guitar. Gameplay audio is now clean (KI-13). Gameplay frame pacing improved a lot (KI-14): every guest frame now reaches the presenter; what is left are guest-side stalls of 40-150 ms every few seconds.
+The recompiled game **boots, plays the intro, navigates menus, creates a party, lists songs and plays a full song** with a gamepad emulating a guitar. Gameplay audio is clean (KI-13). Frame pacing is fixed (KI-14): every guest frame is shown exactly once, locked to the display vsync, and the FSI render-target path cut GPU load; songs average ~59 fps, with occasional dips on heavy camera shots because the iGPU is still ~85% busy.
 
 ## Working
 
@@ -21,7 +21,7 @@ The recompiled game **boots, plays the intro, navigates menus, creates a party, 
 
 ## Not validated / pending
 
-- Menus: ✅ navigable, stable frame rate (user report). Party creation and the song list work (KI-12); a full song was played with `--instruments guitar`. Audio is clean after KI-13; gameplay presents all 60 fps since KI-14's fix, with **occasional 40-150 ms hitches** (user: "much better, still some frame drops").
+- Menus: ✅ navigable. Party creation and the song list work (KI-12); full songs play with `--instruments guitar` (default). Gameplay: 0 dropped frames, ~59 fps mean, 6.5% of 2 s windows below 55 fps (KI-14); the pre-song venue fly-through still runs at ~49 fps. GPU headroom is the open item.
 - 4 functions still PENDING in the analysis — see [`known-issues.md`](known-issues.md) KI-1.
 - Input: a gamepad works (A skips the intro, menus navigate); the keyboard does nothing. A gamepad counts as a vocalist unless `--instruments` is used (KI-9); playing a song not yet confirmed.
 - Title update device (`update:\`) missing.

@@ -49,6 +49,9 @@ REXCVAR_DEFINE_STRING(audio_dump, "", "Debug",
 REXCVAR_DEFINE_BOOL(show_fps, false, "Debug",
                     "Show the guest frame rate in a small overlay in the top-left corner");
 
+// present_hooks.cpp: host mailbox/paint counters, reset on each call.
+std::string PresentStatsLine();
+
 namespace {
 
 using GuestImport = void (*)(PPCContext&, uint8_t*);
@@ -91,6 +94,8 @@ struct FrameCounter {
   Window display;  // 0.5 s, for the overlays
   Window log;      // 2 s, for --perf_log
   uint64_t log_audio_frames = 0;
+  // Swap intervals in the --perf_log window: <10, 10-23, 23-40, 40+ ms.
+  uint32_t log_buckets[4] = {};
   // Last published display values.
   double fps = 0.0;
   double worst_ms = 0.0;
@@ -112,6 +117,7 @@ void CountSwap() {
   }
   const double frame_ms = std::chrono::duration<double, std::milli>(now - c.last_swap).count();
   c.last_swap = now;
+  ++c.log_buckets[frame_ms < 10.0 ? 0 : frame_ms < 23.0 ? 1 : frame_ms < 40.0 ? 2 : 3];
 
   double fps, worst, seconds;
   uint32_t count;
@@ -128,8 +134,11 @@ void CountSwap() {
     const int64_t max_gap = g_audio_max_gap_us.exchange(0, std::memory_order_relaxed);
     REXLOG_INFO(
         "perf: {:.1f} fps ({} swaps in {:.2f} s), worst frame {:.1f} ms, audio {:.1f} frames/s "
-        "({} back-to-back, max gap {:.1f} ms)",
-        fps, count, seconds, worst, audio_rate, bursts, max_gap / 1000.0);
+        "({} back-to-back, max gap {:.1f} ms); swap intervals <10/10-23/23-40/40+ ms: "
+        "{}/{}/{}/{}; {}",
+        fps, count, seconds, worst, audio_rate, bursts, max_gap / 1000.0, c.log_buckets[0],
+        c.log_buckets[1], c.log_buckets[2], c.log_buckets[3], PresentStatsLine());
+    for (uint32_t& b : c.log_buckets) b = 0;
   }
 }
 

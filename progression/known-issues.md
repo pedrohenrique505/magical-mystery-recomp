@@ -119,13 +119,34 @@
   `project/src/game_checksums.cpp` (`OnPostLoadXexImage`) replaces those entries in guest memory
   before the game runs. A path missing from the table is logged as a warning.
 
-## KI-17 — Higher internal resolution is expensive; the boot logs say the swap source is unscaled
+## KI-17 — Higher internal resolution is expensive (measured: 2x2 cannot hold 60 on the Vega 6)
 - **Symptom:** "Internal Resolution 2x" (PC Settings, `resolution_scale`) clearly sharpens the
-  image but drops the frame rate far below 60 on the Vega 6 (user, 2026-11-02; not measured yet).
-  At boot the SDK warns `draw resolution scaling is enabled, but the swap source is unscaled
-  (1280x720)`; it logs once, on the first swap (the Bink intro logos), so it does not prove that
-  gameplay is unscaled.
-- **To investigate:** measure with `--perf_log`/`--gpu_frame_csv` at 1x vs 2x (and the cheaper
-  non-square `draw_resolution_scale_x=2` / `_y=1`); check per-frame swap sizes in gameplay
-  (`XELOG_GPU PRESENT` debug line); see whether render-target transfers and resolves grow with
-  the scale (KI-14 tooling).
+  image but drops the frame rate far below 60 on the Vega 6. At boot the SDK warns
+  `draw resolution scaling is enabled, but the swap source is unscaled (1280x720)`; it logs once,
+  on the first swap (the Bink intro logos), so it does not prove that gameplay is unscaled
+  (FXAA costing more at 2x than at 1x suggests the swap source is scaled in gameplay).
+- **Measured (2026-11-02, "Sgt. Pepper", AC power, `--gpu_frame_csv --gpu_frame_categories`,
+  means per frame from 5 s on; `build/frames_<cfg>.csv`):**
+
+  | config | guest fps | GPU busy ms (p90) | dump | resolve | texload | transfer | other | EDRAM dumps |
+  |---|---|---|---|---|---|---|---|---|
+  | 1x | 58.9 | 9.8 (13.0) | 0.44 | 0.85 | 0.81 | 1.87 | 5.7 | 2.9 |
+  | 1x + FXAA extreme | 59.1 | 10.4 (13.5) | 0.46 | 0.84 | 0.80 | 1.80 | 6.4 | 2.9 |
+  | 2x2 | 28.0 | 33.9 (42.7) | 3.62 | 3.47 | 4.72 | 6.30 | 15.7 | 19.6 |
+  | 2x2 + patch 0009 | 28.7 | 32.7 (41.0) | 1.64 | 3.32 | 4.64 | 6.27 | 16.7 | 2.8 |
+  | 2x1 (`draw_resolution_scale_x=2`) | 48.3 | 18.4 (23.4) | 1.80 | 1.66 | 2.26 | 3.28 | 9.2 | 21.2 |
+  | 2x1 + patch 0009 | 50.4 | 17.4 (21.9) | 0.84 | 1.65 | 2.28 | 3.29 | 9.2 | 2.9 |
+
+  FXAA costs ~0.6 ms at 1x and 1-2.5 ms at 2x. Texture loads grow with the pixel count
+  (15 → 29 → 57 MB per frame: the post-processing chain reloads its resolved textures every
+  frame). "other" (the game's draws) alone is ~16 ms at 2x2, so 2x2 at 60 fps is out of reach
+  on this iGPU whatever the emulation overhead; 2x1 needs ~4-5 ms less per frame.
+- **Patch 0009 (`--direct_host_resolve_scaled`, on):** patch 0007 fell back to the EDRAM dump
+  for every resolve with scaling. It now writes the scaled resolve buffer directly, in the
+  SDK's Nx1 sub-unit scaled layout (`XeTextureScaledTiledOffset`; the SDK's precompiled
+  shaders predate xenia-canary 0f23f0568, so xenia-edge's group-packed scaled direct resolve,
+  2d0f197, could not be ported as is). EDRAM dumps 19.6 → 2.8 per frame, about −1 ms of GPU per
+  frame; no glitches (user, 2x2 and 2x1).
+- **Next levers:** per-surface scale (xenia-edge 74db632, `draw_resolution_scale_threshold`:
+  surfaces with small pitches, e.g. downscaled post-process chains and shadow maps, stay at
+  1x), which would cut texture loads, resolves and transfers at scale.

@@ -7,16 +7,18 @@ done (2026-11-02 evening, see log.md): 2x internal resolution and FXAA visibly i
 (user), but 2x drops the frame rate far below 60 on the Vega 6 (KI-17), and the full-rate venue
 still runs at ~54 fps. Goal: keep 60 fps with the best quality this iGPU can hold, and make the
 expensive options cheaper.
-1. **Measure first** (nothing is measured yet at 2x): `--perf_log` + `--gpu_frame_csv
-   [--gpu_frame_categories]` in "Sgt. Pepper" at 1x, 2x, and non-square
-   `draw_resolution_scale_x=2`/`_y=1` (half the cost of 2x2 per the Xenia FXAA/FSR post), each
-   with FXAA off/on. Summarise with `scripts/analyze_gpu_frames.py`; compare transfer and resolve
-   costs, which should scale with the pixel count.
-2. **Check what 2x scales:** the boot warning says the swap source is unscaled (logged once, on
-   the Bink logos). Log per-frame swap sizes in gameplay to confirm the final image is scaled.
-3. **Then optimise** where the numbers point: render-target transfers/resolves at scale
-   (KI-14 tooling), the full-rate venue (game-side quality passes via Ghidra and midasm hooks),
-   and consider a 1x2/2x1 "Internal Resolution" choice in the menu if it holds 60.
+1. [x] **Measured** 1x / 2x2 / 2x1 with FXAA off/on (KI-17 table): 1x ~10 ms of GPU per frame,
+   2x1 ~18 ms, 2x2 ~34 ms (the game's own draws alone are ~16 ms at 2x2: 2x2 at 60 is out of
+   reach on this iGPU).
+2. [x] **Patch 0009:** direct resolve under resolution scaling (EDRAM dumps 19.6 → 2.8 per
+   frame, ~−1 ms; 2x1 48 → 50 fps), validated without glitches.
+3. **Next, in order:** (a) port xenia-edge 74db632 per-surface scale
+   (`draw_resolution_scale_threshold`: small-pitch surfaces, e.g. downscaled post chains and
+   shadow maps, stay 1x) to cut texture loads/resolves/transfers at scale, aiming at 2x1 at 60;
+   (b) cheap xenia-edge ports that help 1x too: 40cee11 (duplicate texture loads), fb96381
+   (render targets piling up), 3989ba3 (resolve MSAA addressing), 44f5b4a (vblank pacing);
+   (c) the full-rate venue (game-side quality passes via Ghidra and midasm hooks); then offer a
+   2x1 "Internal Resolution" choice in the menu if it holds 60.
 4. **Menu polish (small):** localized strings for the other languages; maybe a "restart now"
    action for restart-only settings.
 

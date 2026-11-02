@@ -211,3 +211,20 @@
   The Vulkan backend already had an FXAA swap pass (`swap_post_effect`, as Xenia recommends for
   games without good AA); patch 0008 makes it switch live. User: 2x internal resolution and FXAA
   both improve the image clearly, but 2x costs a lot of frame rate on the Vega 6.
+
+## 2026-11-02 (night) — Internal resolution measured; scaled direct resolve (patch 0009)
+
+- Web search for similar problems: nothing on Rock Band or Vega iGPUs in Xenia; the useful
+  source is the xenia-edge fork, which has commits matching our costs: scaled direct resolve
+  (2d0f197, 4eb1115, c8ac925), per-surface resolution scale (74db632), duplicate texture loads
+  (40cee11), render targets piling up on EDRAM base changes (fb96381), vblank pacing on a
+  deadline (44f5b4a).
+- Measured 1x / 2x2 / 2x1, each with FXAA off and on, in "Sgt. Pepper" (table in KI-17). 2x2 is
+  ~34 ms of GPU per frame, 2x1 ~18 ms, 1x ~10 ms.
+- Found that patch 0007 disabled the direct resolve under scaling (19.6 EDRAM dumps per frame
+  at 2x vs 2.9 at 1x). xenia-edge's scaled version writes a group-packed layout; the SDK's
+  precompiled scaled resolve/texture load shaders use the older Nx1 sub-unit layout (checked by
+  disassembling `resolve_fast_32bpp_1x2xmsaa_scaled_cs`), so patch 0009 reimplements the
+  destination addressing for that layout, plus edge's host-pixel tile geometry and half-pixel
+  offset fill. Result: dumps 19.6 → 2.8, ~1 ms per frame (2x1: 48.3 → 50.4 fps), no glitches.
+

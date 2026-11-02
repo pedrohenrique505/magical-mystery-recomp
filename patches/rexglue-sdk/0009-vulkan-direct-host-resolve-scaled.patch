@@ -1,0 +1,419 @@
+diff --git i/include/rex/graphics/vulkan/render_target_cache.h w/include/rex/graphics/vulkan/render_target_cache.h
+index a3a4101..82f1739 100644
+--- i/include/rex/graphics/vulkan/render_target_cache.h
++++ w/include/rex/graphics/vulkan/render_target_cache.h
+@@ -837,7 +837,8 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
+                               draw_util::ResolveCopyShaderIndex copy_shader,
+                               bool draw_resolution_scaled,
+                               const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
+-                              VulkanSharedMemory& shared_memory);
++                              VulkanSharedMemory& shared_memory,
++                              VulkanTextureCache& texture_cache);
+ 
+   // Writes contents of host render targets within rectangles from
+   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
+diff --git i/src/graphics/vulkan/render_target_cache.cpp w/src/graphics/vulkan/render_target_cache.cpp
+index 95d6f79..cabf6dc 100644
+--- i/src/graphics/vulkan/render_target_cache.cpp
++++ w/src/graphics/vulkan/render_target_cache.cpp
+@@ -52,6 +52,12 @@ REXCVAR_DEFINE_STRING(render_target_path_vulkan, "", "GPU/Vulkan",
+ REXCVAR_DEFINE_INT32(rt_transfer_skip_modes, 0, "GPU/Vulkan",
+                      "Debug: bit mask of render-target transfer modes to skip (-1 = all)");
+ 
++// beatles patch 0009: direct host resolve (patch 0007) with resolution scaling too, writing
++// the scaled resolve buffer instead of taking the EDRAM round trip.
++REXCVAR_DEFINE_BOOL(direct_host_resolve_scaled, true, "GPU/Vulkan",
++                    "Resolve host render targets directly also with resolution scaling")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
+ // DEFINE_string(
+ //     render_target_path_vulkan, "",
+ //     "Render target emulation path to use on Vulkan.\n"
+@@ -1178,7 +1184,7 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+         if (REXCVAR_GET(direct_host_resolve)) {
+           direct_resolved = TryResolveCopyDirectly(resolve_info, copy_shader,
+                                                    draw_resolution_scaled, copy_shader_constants,
+-                                                   shared_memory);
++                                                   shared_memory, texture_cache);
+           if (direct_resolved) {
+             ++direct_resolve_success_count_;
+           } else {
+@@ -6045,11 +6051,21 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+     auto equals = [&](spv::Id value, uint32_t constant) {
+       return builder.createBinOp(spv::OpIEqual, type_bool, value, builder.makeUintConstant(constant));
+     };
++    auto scale_up = [&](spv::Id value, uint32_t scale) {
++      return scale > 1 ? multiply(value, builder.makeUintConstant(scale)) : value;
++    };
++    auto divide_down = [&](spv::Id value, uint32_t scale) {
++      return scale > 1 ? builder.createBinOp(spv::OpUDiv, type_uint, value,
++                                             builder.makeUintConstant(scale))
++                       : value;
++    };
+ 
+     // Bit positions in the packed draw_util::Resolve* structures.
+     constexpr uint32_t kEdramInfoBaseTilesShift =
+         xenos::kEdramPitchTilesBits + xenos::kMsaaSamplesBits + 1;
+     constexpr uint32_t kEdramInfoFormatShift = kEdramInfoBaseTilesShift + xenos::kEdramBaseTilesBits;
++    constexpr uint32_t kEdramInfoFillHalfPixelOffsetShift =
++        kEdramInfoFormatShift + xenos::kRenderTargetFormatBits + 1;
+     constexpr uint32_t kCoordinateInfoOffsetXShift = 0;
+     constexpr uint32_t kCoordinateInfoOffsetYShift = 4;
+     constexpr uint32_t kCoordinateInfoWidthShift = 5;
+@@ -6074,8 +6090,15 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+                       32,
+                   "ResolveEdramInfo layout");
+ 
+-    uint32_t tile_width = xenos::kEdramTileWidthSamples >> uint32_t(format_is_64bpp);
+-    uint32_t tile_height = xenos::kEdramTileHeightSamples;
++    // beatles patch 0009: with resolution scaling, the render targets and the destination
++    // are both scaled, so the tile geometry and everything the destination position is
++    // compared or combined with is in host pixels. The scale is a compile-time constant, so
++    // the extra maths drops out at 1x.
++    const uint32_t scale_x = draw_resolution_scale_x();
++    const uint32_t scale_y = draw_resolution_scale_y();
++    const bool dest_scaled = scale_x > 1 || scale_y > 1;
++    uint32_t tile_width = (xenos::kEdramTileWidthSamples >> uint32_t(format_is_64bpp)) * scale_x;
++    uint32_t tile_height = xenos::kEdramTileHeightSamples * scale_y;
+     spv::Id const_tile_width = builder.makeUintConstant(tile_width);
+     spv::Id const_tile_height = builder.makeUintConstant(tile_height);
+     spv::Id const_uint_0 = builder.makeUintConstant(0);
+@@ -6108,26 +6131,31 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+ 
+     // The tile this run falls in, and its position within it. A run never crosses a tile
+     // edge: the tile is a whole number of runs wide and the dispatch starts on a tile
+-    // boundary. Tiles are a power of two pixels tall, but not wide.
++    // boundary. Tiles are a power of two pixels tall only at a power of two scale (the
++    // compiler turns the division by a power of two constant into a shift).
+     spv::Id tile_x = add(extract(dispatch_tile, 0, xenos::kEdramPitchTilesBits),
+                          builder.createBinOp(spv::OpUDiv, type_uint, run_x,
+                                              builder.makeUintConstant(tile_pixels_x)));
+     spv::Id tile_y = add(extract(dispatch_tile, xenos::kEdramPitchTilesBits,
+                                  xenos::kEdramPitchTilesBits),
+-                         shift_right(run_y, rex::log2_floor(tile_pixels_y)));
++                         builder.createBinOp(spv::OpUDiv, type_uint, run_y,
++                                             builder.makeUintConstant(tile_pixels_y)));
+     spv::Id pixel_in_tile_x =
+         builder.createBinOp(spv::OpUMod, type_uint, run_x, builder.makeUintConstant(tile_pixels_x));
+-    spv::Id pixel_in_tile_y = bitwise_and(run_y, tile_pixels_y - 1);
++    spv::Id pixel_in_tile_y =
++        builder.createBinOp(spv::OpUMod, type_uint, run_y, builder.makeUintConstant(tile_pixels_y));
+ 
+     // The destination pixel, relative to the resolve rectangle. The first tile starts
+     // before it when the rectangle is offset within the tile; those pixels wrap around and
+-    // fail the width comparison.
++    // fail the width comparison. Host pixels, so the guest quantities are scaled.
+     spv::Id resolve_offset_x =
+-        shift_left(extract(resolve_coordinate_info, kCoordinateInfoOffsetXShift, 4),
+-                   xenos::kResolveAlignmentPixelsLog2);
++        scale_up(shift_left(extract(resolve_coordinate_info, kCoordinateInfoOffsetXShift, 4),
++                            xenos::kResolveAlignmentPixelsLog2),
++                 scale_x);
+     spv::Id resolve_offset_y =
+-        shift_left(extract(resolve_coordinate_info, kCoordinateInfoOffsetYShift, 1),
+-                   xenos::kResolveAlignmentPixelsLog2);
++        scale_up(shift_left(extract(resolve_coordinate_info, kCoordinateInfoOffsetYShift, 1),
++                            xenos::kResolveAlignmentPixelsLog2),
++                 scale_y);
+     spv::Id dest_x = builder.createBinOp(
+         spv::OpISub, type_uint,
+         add(multiply(tile_x, builder.makeUintConstant(tile_pixels_x)), pixel_in_tile_x),
+@@ -6138,14 +6166,51 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+         resolve_offset_y);
+     spv::Id write_condition = builder.createBinOp(
+         spv::OpLogicalAnd, type_bool,
+-        builder.createBinOp(spv::OpULessThan, type_bool, dest_x,
+-                            shift_left(extract(resolve_coordinate_info, kCoordinateInfoWidthShift,
+-                                               kCoordinateInfoWidthBits),
+-                                       xenos::kResolveAlignmentPixelsLog2)),
++        builder.createBinOp(
++            spv::OpULessThan, type_bool, dest_x,
++            scale_up(shift_left(extract(resolve_coordinate_info, kCoordinateInfoWidthShift,
++                                        kCoordinateInfoWidthBits),
++                                xenos::kResolveAlignmentPixelsLog2),
++                     scale_x)),
+         builder.createBinOp(
+             spv::OpULessThan, type_bool, dest_y,
+-            shift_left(load_push_constant(kDirectResolvePushConstantHeightDiv8),
+-                       xenos::kResolveAlignmentPixelsLog2)));
++            scale_up(shift_left(load_push_constant(kDirectResolvePushConstantHeightDiv8),
++                                xenos::kResolveAlignmentPixelsLog2),
++                     scale_y)));
++
++    // The half-pixel offset fill of the scaled copy shaders (half_pixel_offset_fill_source
++    // in resolve.xesli): the source position is clamped to at least scale / 2 on each axis
++    // relative to the resolve area, stretching the first surely covered host column and row
++    // into the gap the D3D9 half-pixel offset leaves. Expressed as a bias on the source
++    // position; the band is at most half the scale wide, so only the first pixels of a run
++    // can fall in it. Unwritten pixels wrap around to huge values, which get no bias.
++    uint32_t fill_extent_x = dest_scaled ? scale_x >> 1 : 0;
++    uint32_t fill_extent_y = dest_scaled ? scale_y >> 1 : 0;
++    spv::Id fill_bias_y = spv::NoResult;
++    std::vector<spv::Id> fill_bias_x(fill_extent_x);
++    if (fill_extent_x || fill_extent_y) {
++      spv::Id fill_enabled = builder.createBinOp(
++          spv::OpINotEqual, type_bool,
++          bitwise_and(resolve_edram_info, uint32_t(1) << kEdramInfoFillHalfPixelOffsetShift),
++          const_uint_0);
++      auto fill_bias = [&](spv::Id dest_coordinate, uint32_t fill_extent) {
++        spv::Id fill_offset =
++            builder.createTriOp(spv::OpSelect, type_uint, fill_enabled,
++                                builder.makeUintConstant(fill_extent), const_uint_0);
++        return builder.createTriOp(
++            spv::OpSelect, type_uint,
++            builder.createBinOp(spv::OpULessThan, type_bool, dest_coordinate, fill_offset),
++            builder.createBinOp(spv::OpISub, type_uint, fill_offset, dest_coordinate),
++            const_uint_0);
++      };
++      if (fill_extent_y) {
++        fill_bias_y = fill_bias(dest_y, fill_extent_y);
++      }
++      for (uint32_t i = 0; i < fill_extent_x; ++i) {
++        fill_bias_x[i] =
++            fill_bias(i ? add(dest_x, builder.makeUintConstant(i)) : dest_x, fill_extent_x);
++      }
++    }
+ 
+     // The sample this pixel resolves from (XeEdramOffsetBytes): the pixel scaled by the
+     // MSAA dimensions, plus bit 1 of the sample index on X and bit 0 on Y. Fast copies
+@@ -6181,6 +6246,9 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+     // The sample index is uniform across the run.
+     spv::Id source_pixel_x = shift_right(source_sample_x, msaa_x_log2);
+     spv::Id source_pixel_y = shift_right(source_sample_y, msaa_y_log2);
++    if (fill_bias_y != spv::NoResult) {
++      source_pixel_y = add(source_pixel_y, fill_bias_y);
++    }
+     spv::Id source_sample_id = spv::NoResult;
+     if (source_is_multisampled) {
+       spv::Id const_uint_1 = builder.makeUintConstant(1);
+@@ -6211,8 +6279,11 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+     std::vector<spv::Id> run_packed(size_t(pixels_per_thread) * dwords_per_pixel);
+     for (uint32_t i = 0; i < pixels_per_thread; ++i) {
+       spv::Id pixel_packed[2] = {};
+-      load_and_pack(i ? add(source_pixel_x, builder.makeUintConstant(i)) : source_pixel_x,
+-                    source_pixel_y, source_sample_id, pixel_packed);
++      spv::Id pixel_x = i ? add(source_pixel_x, builder.makeUintConstant(i)) : source_pixel_x;
++      if (i < fill_extent_x) {
++        pixel_x = add(pixel_x, fill_bias_x[i]);
++      }
++      load_and_pack(pixel_x, source_pixel_y, source_sample_id, pixel_packed);
+       for (uint32_t j = 0; j < dwords_per_pixel; ++j) {
+         run_packed[i * dwords_per_pixel + j] = pixel_packed[j];
+       }
+@@ -6313,14 +6384,38 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+     // XeResolveDestPixelAddress for the start of the run; the second block of the run is at
+     // a fixed XOR offset in the tiled layout (XenosTextureTiledAddressXInMacroXor).
+     spv::Id tiled_x =
+-        add(dest_x, shift_left(extract(resolve_dest_coordinate_info,
+-                                       kDestCoordinateInfoOffsetXShift, 4),
+-                               xenos::kResolveAlignmentPixelsLog2));
++        add(dest_x, scale_up(shift_left(extract(resolve_dest_coordinate_info,
++                                                kDestCoordinateInfoOffsetXShift, 4),
++                                        xenos::kResolveAlignmentPixelsLog2),
++                             scale_x));
+     spv::Id tiled_y =
+-        add(dest_y, shift_left(extract(resolve_dest_coordinate_info,
+-                                       kDestCoordinateInfoOffsetYShift, 4),
+-                               xenos::kResolveAlignmentPixelsLog2));
++        add(dest_y, scale_up(shift_left(extract(resolve_dest_coordinate_info,
++                                                kDestCoordinateInfoOffsetYShift, 4),
++                                        xenos::kResolveAlignmentPixelsLog2),
++                             scale_y));
+     uint32_t bytes_per_block_log2 = 2 + uint32_t(format_is_64bpp);
++    // beatles patch 0009: the SDK's scaled resolve buffer uses the Nx1 sub-unit layout of
++    // XeTextureScaledTiledOffset (texture_address.xesli before xenia-canary 0f23f0568, which
++    // the SDK's precompiled resolve and texture load shaders were built from - not the
++    // group-packed layout xenia-edge's scaled direct resolve writes): a guest unit is the
++    // 16 bytes of consecutive blocks along X, and the scale_x * scale_y host sub-units of
++    // the same size covering it follow its tiled address times the scale area, column-major.
++    // The tiled maths below runs on the guest unit origin; the sub-unit index is added after.
++    // A run is two sub-units, starting on an even host sub-unit.
++    uint32_t unit_width_log2 = 4 - bytes_per_block_log2;
++    spv::Id subunit_x = spv::NoResult;
++    spv::Id subunit_y = spv::NoResult;
++    if (dest_scaled) {
++      spv::Id host_subunits_x = shift_right(tiled_x, unit_width_log2);
++      spv::Id guest_unit_x = divide_down(host_subunits_x, scale_x);
++      spv::Id guest_y = divide_down(tiled_y, scale_y);
++      subunit_x = builder.createBinOp(spv::OpISub, type_uint, host_subunits_x,
++                                      scale_up(guest_unit_x, scale_x));
++      subunit_y =
++          builder.createBinOp(spv::OpISub, type_uint, tiled_y, scale_up(guest_y, scale_y));
++      tiled_x = shift_left(guest_unit_x, unit_width_log2);
++      tiled_y = guest_y;
++    }
+     spv::Id dest_pitch_macro_tiles =
+         extract(resolve_dest_coordinate_info, 0, kDestCoordinateInfoPitchBits);
+     // XenosTextureTiledAddressCombine.
+@@ -6377,8 +6472,6 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+                             bitwise_and(resolve_dest_info, uint32_t(1) << kDestInfoIsArrayShift),
+                             const_uint_0),
+         address_3d, address_2d);
+-    dest_address = add(dest_address, load_push_constant(kDirectResolvePushConstantDestBase));
+-
+     // XenosTextureTiledAddressXInMacroXor(pixels_per_store) for the second block.
+     auto tiled_combine_const = [](uint32_t outer_inner_bytes, uint32_t bank, uint32_t pipe,
+                                   uint32_t y_lsb) {
+@@ -6388,9 +6481,36 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+     };
+     uint32_t second_block_xor = tiled_combine_const(
+         (pixels_per_store & 0x7) << bytes_per_block_log2, 0, (pixels_per_store >> 3) & 0x3, 0);
++    spv::Id second_block_offset;
++    if (dest_scaled) {
++      // The destination binding starts at the scaled destination base, so no base is added.
++      // XeTextureScaledTiledOffset: guest unit address times the scale area, plus the host
++      // sub-unit within the guest unit (column-major), the run starting on a sub-unit.
++      uint32_t subunit_size_log2 = unit_width_log2 + bytes_per_block_log2;
++      dest_address =
++          add(scale_up(dest_address, scale_x * scale_y),
++              shift_left(add(scale_up(subunit_x, scale_y), subunit_y), subunit_size_log2));
++      // XeTextureScaledRightSubUnitOffsetInConsecutivePair: the next sub-unit to the right
++      // is in the same guest unit unless this one is its last column, in which case it is
++      // in the odd guest unit of the tiled pair.
++      if (scale_x > 1) {
++        second_block_offset = builder.createTriOp(
++            spv::OpSelect, type_uint, equals(subunit_x, scale_x - 1),
++            builder.createBinOp(spv::OpISub, type_uint,
++                                builder.makeUintConstant(second_block_xor * scale_x),
++                                shift_left(subunit_x, subunit_size_log2)),
++            builder.makeUintConstant(uint32_t(1) << subunit_size_log2));
++        second_block_offset = scale_up(second_block_offset, scale_y);
++      } else {
++        second_block_offset = builder.makeUintConstant(second_block_xor * scale_y);
++      }
++    } else {
++      dest_address = add(dest_address, load_push_constant(kDirectResolvePushConstantDestBase));
++      // The first block's address has the bits of the XOR clear, so adding is the same.
++      second_block_offset = builder.makeUintConstant(second_block_xor);
++    }
+     for (uint32_t block = 0; block < 2; ++block) {
+-      spv::Id block_address =
+-          block ? add(dest_address, builder.makeUintConstant(second_block_xor)) : dest_address;
++      spv::Id block_address = block ? add(dest_address, second_block_offset) : dest_address;
+       spv::Id block_index = shift_right(block_address, 4);
+       uint32_t first_dword = block * pixels_per_store * dwords_per_pixel;
+       id_vector_temp.clear();
+@@ -6465,13 +6585,18 @@ VkPipeline VulkanRenderTargetCache::GetDirectResolvePipeline(DirectResolvePipeli
+ bool VulkanRenderTargetCache::TryResolveCopyDirectly(
+     const draw_util::ResolveInfo& resolve_info, draw_util::ResolveCopyShaderIndex copy_shader,
+     bool draw_resolution_scaled, const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
+-    VulkanSharedMemory& shared_memory) {
++    VulkanSharedMemory& shared_memory, VulkanTextureCache& texture_cache) {
+   // beatles patch 0007, after xenia-edge (has207/xenia-edge aa2efeaf, e1ba7952): read the
+   // host render targets straight into shared memory, skipping the dump to the EDRAM buffer
+   // and the copy back out of it. Nothing is recorded unless everything is in place.
+   ++direct_resolve_attempt_count_;
+   if (direct_resolve_pipeline_layout_color_ == VK_NULL_HANDLE ||
+-      direct_resolve_pipeline_layout_depth_ == VK_NULL_HANDLE || draw_resolution_scaled) {
++      direct_resolve_pipeline_layout_depth_ == VK_NULL_HANDLE) {
++    return false;
++  }
++  // beatles patch 0009: with resolution scaling, write the scaled resolve buffer in the
++  // layout the scaled resolve copies write (see the shader).
++  if (draw_resolution_scaled && !REXCVAR_GET(direct_host_resolve_scaled)) {
+     return false;
+   }
+   // Only the bitwise copies: the direct shader reproduces their red/blue and endian swaps,
+@@ -6537,9 +6662,29 @@ bool VulkanRenderTargetCache::TryResolveCopyDirectly(
+     dump_invocations_.emplace_back(rectangle, pipeline_key);
+   }
+ 
+-  // Destination: the same transient storage buffer descriptor the resolve copy uses.
+-  if (!shared_memory.RequestRange(resolve_info.copy_dest_extent_start,
+-                                  resolve_info.copy_dest_extent_length)) {
++  // Destination: the same transient storage buffer descriptor the resolve copy uses - into
++  // shared memory, or with resolution scaling a window into the scaled resolve buffer
++  // starting at the scaled destination base (as the scaled resolve copy binds it).
++  uint32_t copy_dest_range_length = resolve_info.copy_dest_extent_start -
++                                    resolve_info.copy_dest_base +
++                                    resolve_info.copy_dest_extent_length;
++  uint64_t dest_scaled_base = 0, dest_scaled_length = 0;
++  uint64_t dest_scaled_use_start = 0, dest_scaled_use_length = 0;
++  if (draw_resolution_scaled) {
++    const uint32_t dest_bpe_log2 =
++        draw_util::resolve_copy_shader_info[size_t(copy_shader)].dest_bpe_log2;
++    if (!texture_cache.GetScaledResolveRange(resolve_info.copy_dest_base, copy_dest_range_length,
++                                             dest_bpe_log2, dest_scaled_base,
++                                             dest_scaled_length) ||
++        !texture_cache.GetScaledResolveRange(resolve_info.copy_dest_extent_start,
++                                             resolve_info.copy_dest_extent_length, dest_bpe_log2,
++                                             dest_scaled_use_start, dest_scaled_use_length) ||
++        !texture_cache.CommitScaledResolveRange(resolve_info.copy_dest_base,
++                                                copy_dest_range_length, dest_bpe_log2)) {
++      return false;
++    }
++  } else if (!shared_memory.RequestRange(resolve_info.copy_dest_extent_start,
++                                         resolve_info.copy_dest_extent_length)) {
+     return false;
+   }
+   VkDescriptorSet descriptor_set_dest = command_processor_.AllocateSingleTransientDescriptor(
+@@ -6549,13 +6694,16 @@ bool VulkanRenderTargetCache::TryResolveCopyDirectly(
+   }
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+-  uint32_t copy_dest_range_length = resolve_info.copy_dest_extent_start -
+-                                    resolve_info.copy_dest_base +
+-                                    resolve_info.copy_dest_extent_length;
+   VkDescriptorBufferInfo dest_buffer_info;
+-  dest_buffer_info.buffer = shared_memory.buffer();
+-  dest_buffer_info.offset = resolve_info.copy_dest_base;
+-  dest_buffer_info.range = copy_dest_range_length;
++  if (draw_resolution_scaled) {
++    dest_buffer_info.buffer = texture_cache.scaled_resolve_buffer();
++    dest_buffer_info.offset = dest_scaled_base;
++    dest_buffer_info.range = dest_scaled_length;
++  } else {
++    dest_buffer_info.buffer = shared_memory.buffer();
++    dest_buffer_info.offset = resolve_info.copy_dest_base;
++    dest_buffer_info.range = copy_dest_range_length;
++  }
+   VkWriteDescriptorSet write_descriptor_set_dest;
+   write_descriptor_set_dest.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+   write_descriptor_set_dest.pNext = nullptr;
+@@ -6569,9 +6717,13 @@ bool VulkanRenderTargetCache::TryResolveCopyDirectly(
+   write_descriptor_set_dest.pTexelBufferView = nullptr;
+   dfn.vkUpdateDescriptorSets(vulkan_device->device(), 1, &write_descriptor_set_dest, 0, nullptr);
+ 
+-  shared_memory.Use(VulkanSharedMemory::Usage::kComputeWrite,
+-                    std::pair<uint32_t, uint32_t>(resolve_info.copy_dest_extent_start,
+-                                                  resolve_info.copy_dest_extent_length));
++  if (draw_resolution_scaled) {
++    texture_cache.UseScaledResolveBufferForWrite(dest_scaled_use_start, dest_scaled_use_length);
++  } else {
++    shared_memory.Use(VulkanSharedMemory::Usage::kComputeWrite,
++                      std::pair<uint32_t, uint32_t>(resolve_info.copy_dest_extent_start,
++                                                    resolve_info.copy_dest_extent_length));
++  }
+ 
+   // Source barriers and sort indices, as in DumpRenderTargets.
+   for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
+@@ -6607,8 +6759,10 @@ bool VulkanRenderTargetCache::TryResolveCopyDirectly(
+       copy_shader_constants.dest_relative.dest_info.value;
+   resolve_constants[kDirectResolvePushConstantDestCoordinateInfo] =
+       copy_shader_constants.dest_relative.dest_coordinate_info.packed;
++  // Unused with scaling: the scaled binding already starts at the base.
+   resolve_constants[kDirectResolvePushConstantDestBase] =
+-      copy_shader_constants.dest_base - uint32_t(dest_buffer_info.offset);
++      draw_resolution_scaled ? 0
++                             : copy_shader_constants.dest_base - uint32_t(dest_buffer_info.offset);
+   resolve_constants[kDirectResolvePushConstantHeightDiv8] = resolve_info.height_div_8;
+   const uint32_t resolve_base_tiles = copy_shader_constants.dest_relative.edram_info.base_tiles;
+ 
+@@ -6650,10 +6804,13 @@ bool VulkanRenderTargetCache::TryResolveCopyDirectly(
+                                       sizeof(uint32_t) * kDirectResolvePushConstantPitches,
+                                       sizeof(pitches), &pitches);
+ 
+-    uint32_t tile_pixels_x = (xenos::kEdramTileWidthSamples >> uint32_t(rt_key.Is64bpp())) >>
+-                             uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k4X);
+-    uint32_t tile_pixels_y = xenos::kEdramTileHeightSamples >>
+-                             uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k2X);
++    // Host pixels, scaled along with the render targets and the destination (patch 0009).
++    uint32_t tile_pixels_x = ((xenos::kEdramTileWidthSamples >> uint32_t(rt_key.Is64bpp())) >>
++                              uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k4X)) *
++                             draw_resolution_scale_x();
++    uint32_t tile_pixels_y = (xenos::kEdramTileHeightSamples >>
++                              uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k2X)) *
++                             draw_resolution_scale_y();
+     uint32_t pixels_per_thread = (kDirectResolvePixelsPerStore * 2) >> uint32_t(rt_key.Is64bpp());
+ 
+     DumpOffsets offsets;

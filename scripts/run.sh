@@ -43,6 +43,10 @@ if [ -f "$ROOT/build/sdk-lib/librexruntime.so" ]; then
   SDK_LIBS="$ROOT/build/sdk-lib:$SDK_LIBS"
   echo "run.sh: using patched SDK runtime from build/sdk-lib" >&2
 fi
+if [ -f "$ROOT/build/sdk-lib/librexgpu-xenos.so" ]; then
+  export REXGLUE_GPU_PLUGIN_DIR="$ROOT/build/sdk-lib"
+  echo "run.sh: using patched GPU plugin from build/sdk-lib" >&2
+fi
 export LD_LIBRARY_PATH="$SDK_LIBS:${LD_LIBRARY_PATH:-}"
 
 # Log file: RUN_LOG=build/foo.log scripts/run.sh keeps A/B runs apart (the SDK appends).

@@ -1,0 +1,89 @@
+diff --git i/src/graphics/shared_memory.cpp w/src/graphics/shared_memory.cpp
+index ec0df7c..38462b9 100644
+--- i/src/graphics/shared_memory.cpp
++++ w/src/graphics/shared_memory.cpp
+@@ -15,11 +15,22 @@
+ 
+ #include <rex/assert.h>
+ #include <rex/bit.h>
++#include <rex/cvar.h>
+ #include <rex/dbg.h>
+ #include <rex/graphics/shared_memory.h>
+ #include <rex/math.h>
+ #include <rex/memory.h>
+ 
++// beatles patch 0004: when a draw needs pages that the CPU has written, also upload the
++// invalid pages right next to them (up to this many KB on each side). Dynamic vertex and
++// constant data is usually written for a whole frame before the GPU reads it piecewise; one
++// larger upload replaces many small ones, and each upload costs a pipeline barrier and, in
++// Vulkan, the end of the current render pass. Pages the CPU writes again later are
++// invalidated and re-uploaded on use as before. 0 disables it.
++REXCVAR_DEFINE_UINT32(shared_memory_upload_coalesce_kb, 0, "GPU",
++                      "Extend shared memory uploads into adjacent CPU-written pages, in KB per "
++                      "side (0 = off)");
++
+ namespace rex::graphics {
+ 
+ SharedMemory::SharedMemory(memory::Memory& memory) : memory_(memory) {
+@@ -383,6 +394,61 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+   }
+   merged_ranges.resize(merged_write + 1);
+ 
++  if (uint32_t coalesce_pages =
++          (REXCVAR_GET(shared_memory_upload_coalesce_kb) << 10) >> page_size_log2_) {
++    auto global_lock = global_critical_region_.Acquire();
++    auto page_valid = [this](uint32_t page) {
++      return (system_page_flags_valid_[page >> 6] >> (page & 63)) & 1;
++    };
++    const uint32_t page_count_total = kBufferSize >> page_size_log2_;
++    for (std::pair<uint32_t, uint32_t>& range : merged_ranges) {
++      uint32_t page_first = range.first >> page_size_log2_;
++      uint32_t page_last = (range.first + range.second - 1) >> page_size_log2_;
++      bool needs_upload = false;
++      for (uint32_t page = page_first; page <= page_last; ++page) {
++        if (!page_valid(page)) {
++          needs_upload = true;
++          break;
++        }
++      }
++      if (!needs_upload) {
++        continue;
++      }
++      uint32_t new_first = page_first;
++      while (new_first > 0 && page_first - new_first < coalesce_pages &&
++             !page_valid(new_first - 1)) {
++        --new_first;
++      }
++      uint32_t new_last = page_last;
++      while (new_last + 1 < page_count_total && new_last - page_last < coalesce_pages &&
++             !page_valid(new_last + 1)) {
++        ++new_last;
++      }
++      uint32_t new_start = new_first << page_size_log2_;
++      uint64_t new_end = std::max(uint64_t(range.first) + range.second,
++                                  uint64_t(new_last + 1) << page_size_log2_);
++      new_end = std::min(new_end, uint64_t(kBufferSize));
++      range.first = std::min(range.first, new_start);
++      range.second = uint32_t(new_end - range.first);
++    }
++    // Widened ranges may now overlap; merge them again (they are still sorted by start).
++    size_t write = 0;
++    for (size_t i = 1; i < merged_ranges.size(); ++i) {
++      std::pair<uint32_t, uint32_t>& previous = merged_ranges[write];
++      const std::pair<uint32_t, uint32_t>& current = merged_ranges[i];
++      uint64_t previous_end = uint64_t(previous.first) + previous.second;
++      if (current.first <= previous_end) {
++        uint64_t current_end = uint64_t(current.first) + current.second;
++        if (current_end > previous_end) {
++          previous.second = uint32_t(current_end - previous.first);
++        }
++      } else {
++        merged_ranges[++write] = current;
++      }
++    }
++    merged_ranges.resize(write + 1);
++  }
++
+   for (const std::pair<uint32_t, uint32_t>& range : merged_ranges) {
+     if (!EnsureHostGpuMemoryAllocated(range.first, range.second)) {
+       return false;

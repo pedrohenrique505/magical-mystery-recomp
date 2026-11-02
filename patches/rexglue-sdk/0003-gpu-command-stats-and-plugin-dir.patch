@@ -1,0 +1,160 @@
+diff --git i/include/rex/graphics/vulkan/command_processor.h w/include/rex/graphics/vulkan/command_processor.h
+index 696ff48..5b8adbf 100644
+--- i/include/rex/graphics/vulkan/command_processor.h
++++ w/include/rex/graphics/vulkan/command_processor.h
+@@ -145,6 +145,7 @@ class VulkanCommandProcessor : public CommandProcessor {
+ 
+   // Returns the deferred drawing command list for the currently open
+   // submission.
++  bool in_render_pass() const { return in_render_pass_; }  // beatles patch 0003
+   DeferredCommandBuffer& deferred_command_buffer() {
+     assert_true(submission_open_);
+     return deferred_command_buffer_;
+diff --git i/include/rex/graphics/vulkan/deferred_command_buffer.h w/include/rex/graphics/vulkan/deferred_command_buffer.h
+index 9d2a848..6cf3906 100644
+--- i/include/rex/graphics/vulkan/deferred_command_buffer.h
++++ w/include/rex/graphics/vulkan/deferred_command_buffer.h
+@@ -23,6 +23,20 @@ namespace rex::graphics::vulkan {
+ 
+ class VulkanCommandProcessor;
+ 
++// GPU counters for profiling (beatles patch 0003). Slots below kGpuStatCommandCount count
++// executed commands by DeferredCommandBuffer::Command value (same order as that enum).
++constexpr size_t kGpuStatCommandCount = 28;
++enum class GpuStatSlot : size_t {
++  kCopyBufferRegions = kGpuStatCommandCount,  // regions in executed vkCmdCopyBuffer
++  kSharedMemoryUploads,                       // VulkanSharedMemory::UploadRanges calls
++  kSharedMemoryUploadBytes,                   // bytes copied by those calls
++  kSharedMemoryUploadRenderPassEnds,          // uploads that ended an open render pass
++  kSubmissions,                               // DeferredCommandBuffer::Execute calls
++  kCount,
++};
++constexpr size_t kGpuStatSlotCount = size_t(GpuStatSlot::kCount);
++void GpuStatAdd(GpuStatSlot slot, uint64_t value);
++
+ class DeferredCommandBuffer {
+  public:
+   DeferredCommandBuffer(const VulkanCommandProcessor& command_processor,
+diff --git i/src/graphics/vulkan/deferred_command_buffer.cpp w/src/graphics/vulkan/deferred_command_buffer.cpp
+index b49e033..5b4f9be 100644
+--- i/src/graphics/vulkan/deferred_command_buffer.cpp
++++ w/src/graphics/vulkan/deferred_command_buffer.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <atomic>
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstring>
+@@ -22,6 +23,15 @@
+ 
+ namespace rex::graphics::vulkan {
+ 
++// Command counters for the host app's --perf_log (rex_gpu_take_command_stats below).
++// Slots 0..kGpuStatCommandCount-1 count executed commands by DeferredCommandBuffer::Command
++// value; the others are listed in GpuStatSlot.
++std::atomic<uint64_t> g_gpu_stats[kGpuStatSlotCount];
++
++void GpuStatAdd(GpuStatSlot slot, uint64_t value) {
++  g_gpu_stats[size_t(slot)].fetch_add(value, std::memory_order_relaxed);
++}
++
+ DeferredCommandBuffer::DeferredCommandBuffer(const VulkanCommandProcessor& command_processor,
+                                              size_t initial_size)
+     : command_processor_(command_processor) {
+@@ -37,6 +47,8 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+   SCOPE_profile_cpu_f("gpu");
+ #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+ 
++  static_assert(size_t(Command::kVkSetViewport) + 1 == kGpuStatCommandCount);
++  GpuStatAdd(GpuStatSlot::kSubmissions, 1);
+   const ui::vulkan::VulkanDevice::Functions& dfn =
+       command_processor_.GetVulkanDevice()->functions();
+   const uintmax_t* stream = command_stream_.data();
+@@ -45,6 +57,9 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+     const CommandHeader& header = *reinterpret_cast<const CommandHeader*>(stream);
+     stream += kCommandHeaderSizeElements;
+     stream_remaining -= kCommandHeaderSizeElements;
++    if (size_t(header.command) < kGpuStatCommandCount) {
++      g_gpu_stats[size_t(header.command)].fetch_add(1, std::memory_order_relaxed);
++    }
+ 
+     switch (header.command) {
+       case Command::kVkBeginRenderPass: {
+@@ -140,6 +155,7 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+ 
+       case Command::kVkCopyBuffer: {
+         auto& args = *reinterpret_cast<const ArgsVkCopyBuffer*>(stream);
++        GpuStatAdd(GpuStatSlot::kCopyBufferRegions, args.region_count);
+         dfn.vkCmdCopyBuffer(command_buffer, args.src_buffer, args.dst_buffer, args.region_count,
+                             reinterpret_cast<const VkBufferCopy*>(
+                                 reinterpret_cast<const uint8_t*>(stream) +
+@@ -425,3 +441,14 @@ void* DeferredCommandBuffer::WriteCommand(Command command, size_t arguments_size
+ }
+ 
+ }  // namespace rex::graphics::vulkan
++
++// Returns the counters accumulated since the previous call and resets them. Writes at most
++// `count` values (layout: rex::graphics::vulkan::GpuStatSlot); returns the number of slots.
++extern "C" __attribute__((visibility("default"))) size_t rex_gpu_take_command_stats(
++    uint64_t* out, size_t count) {
++  using namespace rex::graphics::vulkan;
++  for (size_t i = 0; i < kGpuStatSlotCount && i < count; ++i) {
++    out[i] = g_gpu_stats[i].exchange(0, std::memory_order_relaxed);
++  }
++  return kGpuStatSlotCount;
++}
+diff --git i/src/graphics/vulkan/shared_memory.cpp w/src/graphics/vulkan/shared_memory.cpp
+index 6788214..4ce32cd 100644
+--- i/src/graphics/vulkan/shared_memory.cpp
++++ w/src/graphics/vulkan/shared_memory.cpp
+@@ -280,6 +280,10 @@ bool VulkanSharedMemory::UploadRanges(
+                      (upload_page_ranges.back().first + upload_page_ranges.back().second -
+                       upload_page_ranges.front().first)
+                          << page_size_log2()));
++  GpuStatAdd(GpuStatSlot::kSharedMemoryUploads, 1);
++  if (command_processor_.in_render_pass()) {
++    GpuStatAdd(GpuStatSlot::kSharedMemoryUploadRenderPassEnds, 1);
++  }
+   command_processor_.SubmitBarriers(true);
+   DeferredCommandBuffer& command_buffer = command_processor_.deferred_command_buffer();
+   uint64_t submission_current = command_processor_.GetCurrentSubmission();
+@@ -315,6 +319,7 @@ bool VulkanSharedMemory::UploadRanges(
+       upload_region.srcOffset = upload_buffer_offset;
+       upload_region.dstOffset = VkDeviceSize(upload_range_start << page_size_log2());
+       upload_region.size = upload_buffer_size;
++      GpuStatAdd(GpuStatSlot::kSharedMemoryUploadBytes, upload_buffer_size);
+       uint32_t upload_buffer_pages = uint32_t(upload_buffer_size >> page_size_log2());
+       upload_range_start += upload_buffer_pages;
+       upload_range_length -= upload_buffer_pages;
+diff --git i/src/system/gpu_plugin_loader.cpp w/src/system/gpu_plugin_loader.cpp
+index 754fa13..35b5e77 100644
+--- i/src/system/gpu_plugin_loader.cpp
++++ w/src/system/gpu_plugin_loader.cpp
+@@ -17,6 +17,8 @@
+ 
+ #include <fmt/format.h>
+ 
++#include <cstdlib>
++
+ #include <rex/filesystem.h>
+ #include <rex/logging.h>
+ #include <rex/platform.h>
+@@ -56,6 +58,16 @@ std::vector<platform::DynamicLibrary>& LoadedPlugins() {
+ 
+ std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::string_view backend) {
+   auto path = rex::filesystem::GetExecutableFolder() / PluginFileName(name);
++  // beatles patch 0003: REXGLUE_GPU_PLUGIN_DIR points at a rebuilt plugin (scripts/build_sdk.sh).
++  if (const char* plugin_dir = std::getenv("REXGLUE_GPU_PLUGIN_DIR");
++      plugin_dir && *plugin_dir) {
++    auto override_path = std::filesystem::path(plugin_dir) / PluginFileName(name);
++    if (std::filesystem::exists(override_path)) {
++      REXSYS_INFO("GPU plugin '{}' loaded from REXGLUE_GPU_PLUGIN_DIR: {}", name,
++                  override_path.string());
++      path = override_path;
++    }
++  }
+   if (!std::filesystem::exists(path)) {
+     REXSYS_ERROR(
+         "GPU plugin '{}' not found at {}. Stage it next to the executable "

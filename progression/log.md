@@ -104,3 +104,15 @@
 - User: "never really 60, feels like 40-45". Screen capture at 60 fps: 30-45 distinct frames/s. A per-region difference map showed alternating frames where only the note highway changes: the game renders the venue at half rate (very likely by design; RB2/RB3 Deluxe mods add "60 fps venues").
 - New: `scripts/count_distinct_frames.py` (distinct frames per second in a CFR capture).
 - User review of the capture: an apparent drop to 20-25 fps at 1:07-1:10 (venue every third frame there). Next session: force the venue to full rate (step 1) and profile the remaining dips on fbo (step 2); see `next-steps.md`.
+
+## 2026-11-02 (night) — Why the venue runs at half rate
+
+- Found the mechanism with the RB3 decomp (`system/rndobj/PostProc.cpp`, `ProcCounter`) and Ghidra (`Rnd::Handle` `proc_lock` → `0x8241BFB0` SetProcAndLock, `0x8241BFC0` ProcCommands): the world/post/char processing is split across frames according to the current post-processor's `emulate_fps` (30 in gameplay). It is a deliberate film-rate effect, not a frame budget.
+- Added `--full_rate_world` (`project/src/world_rate_hooks.cpp`, first `[[entrypoint.midasm_hook]]` of the project) and `world_rate:` log lines; `debug_probe.cpp` exports `GuestBaseOrNull()`.
+- A/B (user): full rate raises distinct frames on screen 37.4 → 42.7/s but drops the guest (and the note highway) 57 → 43.5 fps, GPU-bound at 97%. Off by default; see KI-14.
+
+## 2026-11-02 (night, later) — GPU command counters; upload coalescing ruled out
+
+- Patch 0003: per-command counters in the Vulkan backend (`gpu cmds:` in `--perf_log`) and `REXGLUE_GPU_PLUGIN_DIR`; `build_sdk.sh` rebuilds the xenos plugin too. Gameplay has ~195 shared-memory uploads per frame, ~106 of them breaking a render pass.
+- RGP trace on fbo (user screenshots, `build/rgp/shots3/`): render-target transfers ~18% of a 15.6 ms frame; gaps in wavefront occupancy between barriers.
+- Patch 0004: `--shared_memory_upload_coalesce_kb` (off by default). User runs D/E (256/1024 KB): 60-65% fewer barriers and render passes, no glitches, but no fps gain (more bytes copied on the GPU command thread). Kept as an option.

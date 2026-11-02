@@ -2,11 +2,11 @@
 # Builds the ReXGlue SDK runtime libraries from source with this project's patches.
 #
 # The prebuilt SDK (tools/rexglue/linux-amd64) stays the source of headers, CMake config,
-# the codegen binary, static libraries and the GPU plugin (loaded from the executable's
-# folder); only librexruntime.so is rebuilt. scripts/run.sh puts build/sdk-lib first in
-# LD_LIBRARY_PATH when it exists, so the game picks the patched library up without
-# relinking (same v0.10.0 source; the executable and the prebuilt plugin need no symbol
-# that the rebuilt library lacks).
+# the codegen binary and static libraries; librexruntime.so and the xenos GPU plugin
+# (librexgpu-xenos.so, which holds the Vulkan backend) are rebuilt. scripts/run.sh puts
+# build/sdk-lib first in LD_LIBRARY_PATH and points REXGLUE_GPU_PLUGIN_DIR (patch 0003) at
+# it when the files exist, so the game picks them up without relinking (same v0.10.0
+# source; the executable needs no symbol that the rebuilt libraries lack).
 #
 # Usage: scripts/build_sdk.sh            # apply patches, build, copy libs to build/sdk-lib
 #        scripts/build_sdk.sh --remove   # delete build/sdk-lib (back to the prebuilt SDK)
@@ -43,10 +43,10 @@ if [ ! -f "$BUILD/build.ninja" ]; then
     -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=mold
 fi
 
-nice -n 10 ninja -C "$BUILD" -j2 rexruntime
+nice -n 10 ninja -C "$BUILD" -j2 rexruntime rexgpu-xenos
 
 mkdir -p "$OUT"
-for lib in librexruntime.so; do
+for lib in librexruntime.so librexgpu-xenos.so; do
   cp -f -- "$SDK/out/linux-amd64/$lib" "$OUT/$lib"
   echo "build_sdk.sh: $OUT/$lib"
 done

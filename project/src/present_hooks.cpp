@@ -36,6 +36,7 @@
 // at the cost of one frame of latency.
 
 #include <dlfcn.h>
+#include <link.h>
 
 #include <algorithm>
 #include <array>
@@ -159,6 +160,48 @@ MemberFn ResolveSdkMember(const char* mangled) {
   return fn;
 }
 
+// GPU command counters exported by the rebuilt xenos plugin (patches/rexglue-sdk/0003).
+// The plugin is dlopen'ed privately by the SDK, so find it among the loaded objects and
+// look the symbol up through a non-loading handle.
+using TakeGpuStats = size_t (*)(uint64_t*, size_t);
+TakeGpuStats FindTakeGpuStats() {
+  std::string plugin_path;
+  dl_iterate_phdr(
+      [](dl_phdr_info* info, size_t, void* data) {
+        if (info->dlpi_name && std::strstr(info->dlpi_name, "librexgpu-xenos")) {
+          *static_cast<std::string*>(data) = info->dlpi_name;
+          return 1;
+        }
+        return 0;
+      },
+      &plugin_path);
+  if (plugin_path.empty()) {
+    return nullptr;
+  }
+  void* handle = dlopen(plugin_path.c_str(), RTLD_NOW | RTLD_NOLOAD);
+  return handle ? reinterpret_cast<TakeGpuStats>(dlsym(handle, "rex_gpu_take_command_stats"))
+                : nullptr;
+}
+
+// Totals since the previous --perf_log line (indices: DeferredCommandBuffer::Command, then
+// rex::graphics::vulkan::GpuStatSlot).
+std::string GpuCommandStatsPart() {
+  static const TakeGpuStats take = FindTakeGpuStats();
+  if (!take) {
+    return {};
+  }
+  uint64_t v[64] = {};
+  if (take(v, std::size(v)) < 33) {
+    return {};
+  }
+  return fmt::format(
+      "; gpu cmds: {} submissions, {} draws, {} render passes, {} barriers, {} dispatches, "
+      "{} buffer copies ({} regions), {} image uploads, {} clears; shared-memory uploads {} "
+      "({:.1f} MB, {} ended a render pass)",
+      v[32], v[12] + v[13], v[0] + v[16], v[18], v[11], v[8], v[28], v[9], v[6] + v[7], v[29],
+      v[30] / 1e6, v[31]);
+}
+
 }  // namespace
 
 std::string PresentStatsLine() {
@@ -183,6 +226,7 @@ std::string PresentStatsLine() {
                         "present {:.1f} ms",
                         w[0], w[1] / 1e6, w[2] / 1e6, w[3] / 1e6);
   }
+  line += GpuCommandStatsPart();
   if (REXCVAR_GET(present_pacing)) {
     Pacing& p = Pace();
     std::lock_guard<std::mutex> pace_guard(p.mutex);

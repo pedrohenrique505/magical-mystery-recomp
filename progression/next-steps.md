@@ -8,7 +8,7 @@
 venue drops to every third frame (capture `build/capI.mp4` 1:07-1:10: 26-30 distinct/s,
 repeat runs of 2; user: "looks like 20-25 fps"). The user chose to do both items below.
 
-### Step 1: find and force the venue's half-rate rendering
+### Step 1 (done 2026-11-02): venue half-rate rendering — found, `--full_rate_world`; see KI-14. Full rate is GPU-bound on this iGPU (43 fps). Open: an adaptive mode, or GPU savings (step 2) first
 - Hypothesis: the engine skips the world/venue draw on alternate frames (RB2/RB3 "Deluxe"
   mods advertise "60 fps venues", so the stock engine runs venues below 60). Confirm before
   patching: it could also be a guest-side frame budget that skips the venue when a frame runs
@@ -27,7 +27,7 @@ repeat runs of 2; user: "looks like 20-25 fps"). The user chose to do both items
   (`scripts/count_distinct_frames.py`). Expect the GPU to become the limit (fbo averaged ~80%
   busy at 58 fps with the half-rate venue).
 
-### Step 2: profile the remaining dips on the fbo path
+### Step 2: profile the remaining dips on the fbo path (in progress 2026-11-02: counters + RGP done, upload coalescing ruled out; see KI-14. Open: render-target transfers ~18% of GPU time, and CPU time of the GPU command thread in the dips — `scripts/profile.sh`)
 - `scripts/rgp_capture.sh 3` while playing the start of "Sgt. Pepper" (the earlier traces were
   all FSI). Open with RGP 1.14.1 (`build/tools/rgp-1.14.1/x/RadeonDeveloperToolSuite-2023-02-15-1051/RadeonGPUProfiler`);
   useful views: Events → Event timing with "Group by pass" + collapsed tree + zoom to fit

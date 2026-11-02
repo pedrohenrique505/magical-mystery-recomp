@@ -1,4 +1,4 @@
-# I Am the Walrus — Rock Band: The Beatles recompilation for Linux
+# Magical Mystery Recomp — Rock Band: The Beatles recompilation for Linux
 
 Static recompilation of *The Beatles: Rock Band* (Xbox 360) into native Linux C++. The PowerPC code in `default.xex` is converted to C++ by the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and compiled against the SDK runtime (kernel/XAM, Xenos GPU on Vulkan, audio and input through SDL).
 

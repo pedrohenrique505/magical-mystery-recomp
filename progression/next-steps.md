@@ -39,13 +39,14 @@ Suggested order, from cheapest/most informative to most expensive.
 ## 1. Validate what runs (immediate)
 - [x] Run `scripts/run.sh` and record what appears. Result: the intro animated movie plays on screen.
 - [x] Fix the random intro freeze/crash (KI-7, input race in the SDK).
-- [ ] Record whether the intro has sound, whether it can be skipped, and what happens when it ends (title screen, black screen, crash). If it crashes, note the last `[FATAL]` line from `build/run.log`.
+- [x] The intro can be skipped (A) and leads to the title screen and menus.
+- [ ] Confirm the intro movie has sound in sync (gameplay audio is confirmed, KI-13).
 
 - [x] Song list after creating a party (KI-12, `XNetRandom`). A full song plays.
 - [x] Gameplay audio crackling / slow-motion feel: SDL pulled 4 frames per callback, fixed with `SDL_AUDIO_DEVICE_SAMPLE_FRAMES=256` (KI-13).
 - [x] Gameplay showed ~30 distinct fps: the presenter dropped half the frames because the SDK's achievement toast forced UI-thread painting (KI-14).
 - [x] Gameplay frame pacing (KI-14): `--present_pacing` + FIFO, 0 dropped frames.
-- [x] GPU: FSI render-target path removes EDRAM transfer draws (KI-14).
+- [x] GPU: FSI render-target path tried (removes transfer draws but no early-Z; slower in heavy scenes, `fbo` is the default again, KI-14).
 - [x] GPU headroom for 60 fps in gameplay (KI-14 fixes 4-5: `execute_unclipped_draw_vs_on_cpu`, Vulkan direct resolve).
 - [ ] Full-rate venue (`--full_rate_world`) at 60: see "START HERE".
 - [ ] Remove or gate the `--debug_probe` watch list once it is no longer needed (it only reads memory and is off by default).
@@ -62,7 +63,8 @@ Suggested order, from cheapest/most informative to most expensive.
 - [ ] If so, recompile from the patched XEX and rebuild the manifest.
 
 ## 4. Audio and video
-- [ ] Confirm XMA decoding (music and SFX) and latency.
+- [x] XMA decoding: music and SFX play cleanly in songs (KI-13).
+- [ ] Measure audio latency against the note highway (calibration).
 - [ ] Check the `Skipping Vulkan frame presentation due to async placeholder draw usage` message and whether it affects the picture.
 - [ ] Bink video playback: the intro movie already shows; verify audio sync and the other movies in the game (`BINK*` blocks in the XEX).
 
@@ -77,6 +79,7 @@ Suggested order, from cheapest/most informative to most expensive.
 - [ ] DLC / extra songs (STFS under `Content/`).
 
 ## 7. Project quality
-- [ ] Push the repository to GitHub and pick a license.
+- [x] Push the repository to GitHub (`pedrohenrique505/magical-mystery-recomp`).
+- [ ] Pick a license (there is no LICENSE file yet).
 - [ ] Document the manifest quirks discovered so far (see `AGENTS.md`) where other ReXGlue users can find them.
-- [ ] Consider contributing fixes or reports back to ReXGlue (vtables without RTTI).
+- [ ] Consider contributing fixes or reports back to ReXGlue: vtables without RTTI, the busy-waiting `WaitMultiple` (patch 0005), `execute_unclipped_draw_vs_on_cpu` defaulting to false (KI-14), and the Vulkan direct resolve stub (patch 0007).

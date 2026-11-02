@@ -159,11 +159,15 @@
   | no threshold (patch 0009) | 49.7 | 71% | 17.4 (21.9) | sharp |
   | threshold 640 | 57.6 | 13% | 12.8 (16.7) | softer |
   | threshold 320 | 54.1 | 37% | 15.9 (18.7) | sharp |
+  | threshold 640, `--draw_resolution_scale_threshold_msaa_mask=5` | 56.2 | 21% | 15.0 (17.9) | sharp |
 
   2x2 with threshold 640: 28.8 → 48.3 fps. Surfaces per frame in gameplay: 1280 px 1x with
   depth ~150 draws (the 3D scene), **640 px 2xMSAA without depth ~135 draws** (2D/screen work,
   probably the note highway, HUD or crowd impostors), 640 px 4xMSAA ~33 (full-screen post
   passes), 560 px 1x with depth 7-20 (shadow map or reflection), ≤320 px ~40 (bloom chain,
   shadows). Threshold 640 makes the 640 px 2xMSAA surface native, which is both where most of
-  the gain comes from and why the image is softer; there is no threshold that keeps it sharp
-  and cheap.
+  the gain comes from and why the image is softer. `--draw_resolution_scale_threshold_msaa_mask`
+  (bit 0 1x, bit 1 2x, bit 2 4x; default 7) limits the threshold to some MSAA modes: mask 5
+  keeps the 640 px 2xMSAA surface scaled and the 640 px 4xMSAA post passes, the 560 px surface
+  and everything ≤320 px native - the best sharp 2x1 so far (56.2 fps), still short of a
+  stable 60.

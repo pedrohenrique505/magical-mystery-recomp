@@ -241,4 +241,7 @@
   surface without depth (2D/screen work), which threshold 640 renders at 1x (KI-17).
 - Note: on Vulkan, `RenderTargetCache::BeginFrame` is never called; per-frame hooks there do
   nothing.
+- Added `--draw_resolution_scale_threshold_msaa_mask`: threshold 640 with mask 5 (1x and 4x
+  MSAA only) keeps the 2xMSAA screen surface scaled: sharp (user) at 56.2 fps, 21% of 2 s
+  windows under 55 fps (threshold 320: 54.1 fps, 37%).
 

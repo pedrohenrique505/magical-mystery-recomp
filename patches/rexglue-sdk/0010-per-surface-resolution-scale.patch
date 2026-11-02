@@ -226,7 +226,7 @@ index 82f1739..6c6c1b7 100644
    bool gamma_render_target_as_unorm16_ = false;
  
 diff --git i/src/graphics/pipeline/render_target/cache.cpp w/src/graphics/pipeline/render_target/cache.cpp
-index 953c5fd..7d56976 100644
+index 953c5fd..0e4ecf6 100644
 --- i/src/graphics/pipeline/render_target/cache.cpp
 +++ w/src/graphics/pipeline/render_target/cache.cpp
 @@ -11,10 +11,13 @@
@@ -243,7 +243,7 @@ index 953c5fd..7d56976 100644
  #include <utility>
  
  #include <rex/assert.h>
-@@ -41,6 +44,27 @@ REXCVAR_DEFINE_BOOL(direct_host_resolve, true, "GPU",
+@@ -41,6 +44,33 @@ REXCVAR_DEFINE_BOOL(direct_host_resolve, true, "GPU",
                      "Resolve from host render targets directly to shared memory when possible")
      .lifecycle(rex::cvar::Lifecycle::kHotReload);
  
@@ -253,6 +253,12 @@ index 953c5fd..7d56976 100644
 +                     "by the resolution scale (small offscreen surfaces such as bloom chains "
 +                     "and shadow maps); compared after alignment to 80-pixel EDRAM tiles. "
 +                     "0 disables it. Host render targets only.")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++// Bit 0: 1x, bit 1: 2x MSAA, bit 2: 4x MSAA. The class must stay a function of the pitch and
++// the MSAA mode only (framebuffers and draws never mix classes), which this keeps.
++REXCVAR_DEFINE_INT32(draw_resolution_scale_threshold_msaa_mask, 7, "GPU",
++                     "MSAA modes draw_resolution_scale_threshold applies to (bit 0 = 1x, "
++                     "bit 1 = 2x, bit 2 = 4x)")
 +    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 +
 +// beatles patch 0010 (debug): every 10 seconds, log how many draws went to each surface
@@ -271,14 +277,15 @@ index 953c5fd..7d56976 100644
  namespace rex::graphics {
  
  void RenderTargetCache::GetPSIColorFormatInfo(xenos::ColorRenderTargetFormat format,
-@@ -397,6 +421,33 @@ void RenderTargetCache::BeginFrame() {
+@@ -397,6 +427,34 @@ void RenderTargetCache::BeginFrame() {
    ResetAccumulatedRenderTargets();
  }
  
 +bool RenderTargetCache::IsScaleNativeForPitch(uint32_t pitch_tiles_at_32bpp,
 +                                              xenos::MsaaSamples msaa_samples) const {
 +  int32_t threshold = REXCVAR_GET(draw_resolution_scale_threshold);
-+  if (threshold <= 0 || !IsDrawResolutionScaled() || GetPath() != Path::kHostRenderTargets) {
++  if (threshold <= 0 || !IsDrawResolutionScaled() || GetPath() != Path::kHostRenderTargets ||
++      !(REXCVAR_GET(draw_resolution_scale_threshold_msaa_mask) & (1 << int(msaa_samples)))) {
 +    return false;
 +  }
 +  // The pitch is the only guest surface dimension that is reliably known: host render target
@@ -305,7 +312,7 @@ index 953c5fd..7d56976 100644
  bool RenderTargetCache::Update(bool is_rasterization_done,
                                 reg::RB_DEPTHCONTROL normalized_depth_control,
                                 uint32_t normalized_color_mask, const Shader& vertex_shader) {
-@@ -430,10 +481,46 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+@@ -430,10 +488,46 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
    uint32_t pitch_tiles_at_32bpp =
        ((pitch_pixels << msaa_samples_x_log2) + (xenos::kEdramTileWidthSamples - 1)) /
        xenos::kEdramTileWidthSamples;
@@ -353,7 +360,7 @@ index 953c5fd..7d56976 100644
      uint32_t max_render_target_width = GetMaxRenderTargetWidth();
      if (pitch_pixels_tile_aligned_scaled > max_render_target_width) {
        // TODO(Triang3l): If really needed for some game on some device, clamp
-@@ -639,6 +726,7 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+@@ -639,6 +733,7 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
      rt_key.msaa_samples = msaa_samples;
      rt_key.is_depth = rt_bit_index == 0;
      rt_key.resource_format = resource_formats[rt_bit_index];
@@ -361,7 +368,7 @@ index 953c5fd..7d56976 100644
      if (!interlock_barrier_only) {
        RenderTarget* render_target = GetOrCreateRenderTarget(rt_key);
        if (!render_target) {
-@@ -836,6 +924,25 @@ void RenderTargetCache::GetHostDepthStoreRectangleInfo(
+@@ -836,6 +931,25 @@ void RenderTargetCache::GetHostDepthStoreRectangleInfo(
    group_count_y_out = (transfer_rectangle.height_pixels * pixel_size_y) >> 3;
  }
  
@@ -387,7 +394,7 @@ index 953c5fd..7d56976 100644
  void RenderTargetCache::GetResolveCopyRectanglesToDump(
      uint32_t base, uint32_t row_length, uint32_t rows, uint32_t pitch,
      std::vector<ResolveCopyDumpRectangle>& rectangles_out) const {
-@@ -980,7 +1087,8 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
+@@ -980,7 +1094,8 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
    }
    uint32_t pitch_pixels =
        pitch_tiles_at_32bpp * (xenos::kEdramTileWidthSamples >> msaa_samples_x_log2);
@@ -397,7 +404,7 @@ index 953c5fd..7d56976 100644
    uint32_t max_render_target_width = GetMaxRenderTargetWidth();
    if (pitch_pixels_scaled > max_render_target_width) {
      // TODO(Triang3l): If really needed for some game on some device, clamp the
-@@ -1080,6 +1188,7 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
+@@ -1080,6 +1195,7 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
      depth_render_target_key.msaa_samples = msaa_samples;
      depth_render_target_key.is_depth = 1;
      depth_render_target_key.resource_format = resolve_info.depth_edram_info.format;
@@ -405,7 +412,7 @@ index 953c5fd..7d56976 100644
      depth_render_target = GetOrCreateRenderTarget(depth_render_target_key);
      if (!depth_render_target) {
        // Failed to create the depth render target, don't clear it.
-@@ -1096,6 +1205,7 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
+@@ -1096,6 +1212,7 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
      color_render_target_key.is_depth = 0;
      color_render_target_key.resource_format = uint32_t(GetColorResourceFormat(
          xenos::ColorRenderTargetFormat(resolve_info.color_edram_info.format)));
@@ -413,7 +420,7 @@ index 953c5fd..7d56976 100644
      color_render_target = GetOrCreateRenderTarget(color_render_target_key);
      if (!color_render_target) {
        // Failed to create the color render target, don't clear it.
-@@ -1185,7 +1295,11 @@ bool RenderTargetCache::WouldOwnershipChangeRequireTransfers(RenderTargetKey des
+@@ -1185,7 +1302,11 @@ bool RenderTargetCache::WouldOwnershipChangeRequireTransfers(RenderTargetKey des
    if (length_tiles == 0) {
      return false;
    }
@@ -426,7 +433,7 @@ index 953c5fd..7d56976 100644
                                         IsHostDepthEncodingDifferent(dest.GetDepthFormat());
    auto would_require_transfers_in_extent = [&](uint32_t extent_start, uint32_t extent_end) -> bool {
      // The map contains consecutive ranges, merged if the adjacent ones are the
-@@ -1250,7 +1364,11 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+@@ -1250,7 +1371,11 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
    }
    uint32_t dest_pitch_tiles = dest.GetPitchTiles();
    bool dest_is_64bpp = dest.Is64bpp();

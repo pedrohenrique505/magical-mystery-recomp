@@ -1,0 +1,1284 @@
+diff --git i/include/rex/graphics/pipeline/render_target/cache.h w/include/rex/graphics/pipeline/render_target/cache.h
+index 3bbd52e..a5ca804 100644
+--- i/include/rex/graphics/pipeline/render_target/cache.h
++++ w/include/rex/graphics/pipeline/render_target/cache.h
+@@ -164,6 +164,19 @@ class RenderTargetCache {
+     return draw_resolution_scale_x() > 1 || draw_resolution_scale_y() > 1;
+   }
+ 
++  // beatles patch 0010 (after xenia-edge 74db632): per-surface resolution scale. Surfaces
++  // whose tile-aligned pitch is at or below draw_resolution_scale_threshold pixels render at
++  // 1x (downscaled post-processing chains, shadow maps), everything else at the global
++  // scale. Host render targets only. A pure function of key fields (pitch and MSAA), shared
++  // by every surface of a draw, so depth and color always land in the same class.
++  bool IsScaleNativeForPitch(uint32_t pitch_tiles_at_32bpp, xenos::MsaaSamples msaa_samples) const;
++  // The same for the current RB_SURFACE_INFO.
++  bool IsDrawScaleNative() const;
++  // Scale of the current draw: the global scale, or 1x under the threshold. Everything
++  // per-draw (viewport, scissor, point size, polygon offset, PsParamGen) must use these.
++  uint32_t GetDrawScaleX() const { return IsDrawScaleNative() ? 1 : draw_resolution_scale_x(); }
++  uint32_t GetDrawScaleY() const { return IsDrawScaleNative() ? 1 : draw_resolution_scale_y(); }
++
+   // Virtual (both the common code and the implementation may do something
+   // here), don't call from destructors (does work not needed for shutdown
+   // also).
+@@ -233,6 +246,10 @@ class RenderTargetCache {
+       uint32_t is_depth : 1;                                      // 22
+       // Ignoring the blending precision and sRGB.
+       uint32_t resource_format : xenos::kRenderTargetFormatBits;  // 26
++      // beatles patch 0010: kept at the native guest resolution because of
++      // draw_resolution_scale_threshold. Native and scaled render targets at the same base
++      // are distinct objects, and ownership is transferred between them.
++      uint32_t scale_native : 1;  // 27
+     };
+ 
+     RenderTargetKey() : key(0) { static_assert_size(*this, sizeof(key)); }
+@@ -279,11 +296,20 @@ class RenderTargetCache {
+     uint32_t GetWidth() const { return GetWidth(pitch_tiles_at_32bpp, msaa_samples); }
+ 
+     std::string GetDebugName() const {
+-      return fmt::format("RT @ {}t, <{}t>, {}xMSAA, {}", base_tiles, GetPitchTiles(),
+-                         uint32_t(1) << uint32_t(msaa_samples), GetFormatName());
++      return fmt::format("RT @ {}t, <{}t>, {}xMSAA, {}{}", base_tiles, GetPitchTiles(),
++                         uint32_t(1) << uint32_t(msaa_samples), GetFormatName(),
++                         scale_native ? ", native" : "");
+     }
+   };
+ 
++  // The scale a render target is created and drawn at (patch 0010).
++  uint32_t GetKeyScaleX(RenderTargetKey key) const {
++    return key.scale_native ? 1 : draw_resolution_scale_x();
++  }
++  uint32_t GetKeyScaleY(RenderTargetKey key) const {
++    return key.scale_native ? 1 : draw_resolution_scale_y();
++  }
++
+   class RenderTarget {
+    public:
+     virtual ~RenderTarget() = default;
+@@ -522,6 +548,12 @@ class RenderTargetCache {
+   void GetResolveCopyRectanglesToDump(uint32_t base, uint32_t row_length, uint32_t rows,
+                                       uint32_t pitch,
+                                       std::vector<ResolveCopyDumpRectangle>& rectangles_out) const;
++  // True if every render target owning the resolve source region is native-scale (patch
++  // 0010): the resolve is then done at 1x into shared memory instead of duplicating pixels
++  // into the scaled layout. Decided from the actual ownership, since one range can span
++  // both classes.
++  bool IsResolveSourceNativeOnly(uint32_t base, uint32_t row_length, uint32_t rows,
++                                 uint32_t pitch) const;
+   void GetResolveCopyDispatchesToDump(uint32_t base, uint32_t row_length, uint32_t rows,
+                                       uint32_t pitch,
+                                       std::vector<ResolveCopyDumpRectangle>& rectangles_out,
+diff --git i/include/rex/graphics/pipeline/shader/spirv_translator.h w/include/rex/graphics/pipeline/shader/spirv_translator.h
+index dce3dbf..bc43669 100644
+--- i/include/rex/graphics/pipeline/shader/spirv_translator.h
++++ w/include/rex/graphics/pipeline/shader/spirv_translator.h
+@@ -33,7 +33,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
+     // TODO(Triang3l): Change to 0xYYYYMMDD once it's out of the rapid
+     // prototyping stage (easier to do small granular updates with an
+     // incremental counter).
+-    static constexpr uint32_t kVersion = 12;
++    static constexpr uint32_t kVersion = 13;  // beatles patch 0010
+ 
+     enum class DepthStencilMode : uint32_t {
+       kNoModifiers,
+@@ -88,6 +88,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
+       uint32_t param_gen_point : 1;
+       // For host render targets - depth / stencil output mode.
+       DepthStencilMode depth_stencil_mode : 3;
++      // beatles patch 0010 (after xenia-edge 74db632): the draw renders at 1x because its
++      // surface pitch is under draw_resolution_scale_threshold - PsParamGen and the memexport
++      // deduplication must act as if there was no resolution scaling. Texture fetch offsets
++      // still follow the texture's scale.
++      uint32_t resolution_scale_native : 1;
+     } pixel;
+     uint64_t value = 0;
+ 
+@@ -759,6 +764,20 @@ class SpirvShaderTranslator : public ShaderTranslator {
+   uint32_t draw_resolution_scale_x_;
+   uint32_t draw_resolution_scale_y_;
+ 
++  // beatles patch 0010: scale of the draw being translated, 1x for pixel shaders of draws
++  // under draw_resolution_scale_threshold. Every position-dependent path uses these; only
++  // the texture fetch offset scaling uses draw_resolution_scale_x_/y_ directly.
++  uint32_t GetCurrentDrawResolutionScaleX() const {
++    return is_pixel_shader() && GetSpirvShaderModification().pixel.resolution_scale_native
++               ? 1
++               : draw_resolution_scale_x_;
++  }
++  uint32_t GetCurrentDrawResolutionScaleY() const {
++    return is_pixel_shader() && GetSpirvShaderModification().pixel.resolution_scale_native
++               ? 1
++               : draw_resolution_scale_y_;
++  }
++
+   // Is currently writing the empty depth-only pixel shader, such as for depth
+   // and stencil testing with fragment shader interlock.
+   bool is_depth_only_fragment_shader_ = false;
+diff --git i/include/rex/graphics/pipeline/texture/cache.h w/include/rex/graphics/pipeline/texture/cache.h
+index d26cd4f..3309825 100644
+--- i/include/rex/graphics/pipeline/texture/cache.h
++++ w/include/rex/graphics/pipeline/texture/cache.h
+@@ -80,7 +80,11 @@ class TextureCache {
+   virtual void BeginSubmission(uint64_t new_submission_index);
+   virtual void BeginFrame();
+ 
+-  void MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_unscaled);
++  // resolution_scaled (beatles patch 0010): whether the data went to the scaled resolve
++  // buffer or to shared memory (native resolves under draw_resolution_scale_threshold); the
++  // latter clears the scaled state of the range.
++  void MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_unscaled,
++                           bool resolution_scaled = true);
+   // Ensures the memory backing the range in the scaled resolve address space is
+   // allocated and returns whether it is.
+   virtual bool EnsureScaledResolveMemoryCommitted(uint32_t /*start_unscaled*/,
+diff --git i/include/rex/graphics/vulkan/command_processor.h w/include/rex/graphics/vulkan/command_processor.h
+index 5b8adbf..b3cf24c 100644
+--- i/include/rex/graphics/vulkan/command_processor.h
++++ w/include/rex/graphics/vulkan/command_processor.h
+@@ -439,7 +439,7 @@ class VulkanCommandProcessor : public CommandProcessor {
+   bool EndGuestOcclusionQuery(uint32_t sample_count_address);
+   bool AcquireOcclusionQueryIndex(uint32_t& host_index_out);
+   void DisableHostOcclusionQueries();
+-  uint64_t NormalizeOcclusionSamples(uint64_t samples) const;
++  uint64_t NormalizeOcclusionSamples(uint64_t samples, uint32_t scale_area) const;
+   void WriteGuestOcclusionResult(uint32_t sample_count_address, uint64_t samples);
+   void InvalidateAllVertexBufferResidency();
+   void InvalidateVertexBufferResidency(uint32_t vfetch_index);
+@@ -740,6 +740,10 @@ class VulkanCommandProcessor : public CommandProcessor {
+   struct ActiveOcclusionQuery {
+     uint32_t sample_count_address = 0;
+     uint32_t host_index = UINT32_MAX;
++    // beatles patch 0010: resolution scale area of the draws in the query (the first one's;
++    // 0 before any draw), which the host sample count is divided by. A query mixing scaled
++    // and native (draw_resolution_scale_threshold) draws is approximated.
++    uint32_t scale_area = 0;
+     bool valid = false;
+   } active_occlusion_query_;
+   struct VertexBufferState {
+diff --git i/include/rex/graphics/vulkan/render_target_cache.h w/include/rex/graphics/vulkan/render_target_cache.h
+index 82f1739..6c6c1b7 100644
+--- i/include/rex/graphics/vulkan/render_target_cache.h
++++ w/include/rex/graphics/vulkan/render_target_cache.h
+@@ -105,9 +105,11 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
+   // Performs the resolve to a shared memory area according to the current
+   // register values, and also clears the render targets if needed. Must be in a
+   // frame for calling.
++  // written_scaled_out (patch 0010): whether the data went to the scaled resolve buffer
++  // rather than shared memory (native resolves under draw_resolution_scale_threshold).
+   bool Resolve(const memory::Memory& memory, VulkanSharedMemory& shared_memory,
+                VulkanTextureCache& texture_cache, uint32_t& written_address_out,
+-               uint32_t& written_length_out);
++               uint32_t& written_length_out, bool* written_scaled_out = nullptr);
+ 
+   bool Update(bool is_rasterization_done, reg::RB_DEPTHCONTROL normalized_depth_control,
+               uint32_t normalized_color_mask, const Shader& vertex_shader) override;
+@@ -268,6 +270,11 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
+       kResolveCopyShaders[size_t(draw_util::ResolveCopyShaderIndex::kCount)];
+   std::array<VkPipeline, size_t(draw_util::ResolveCopyShaderIndex::kCount)>
+       resolve_copy_pipelines_{};
++  // beatles patch 0010: unscaled variants for resolves whose sources are all native-scale
++  // (draw_resolution_scale_threshold); only created with resolution scaling.
++  VkPipelineLayout resolve_copy_native_pipeline_layout_ = VK_NULL_HANDLE;
++  std::array<VkPipeline, size_t(draw_util::ResolveCopyShaderIndex::kCount)>
++      resolve_copy_native_pipelines_{};
+ 
+   // On the fragment shader interlock path, the render pass key is used purely
+   // for passing parameters to pipeline setup - there's always only one render
+@@ -530,6 +537,10 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
+       // as it doesn't matter in this case.
+       xenos::MsaaSamples host_depth_source_msaa_samples : xenos::kMsaaSamplesBits;
+       uint32_t source_resource_format : xenos::kRenderTargetFormatBits;
++      // beatles patch 0010: scale classes of the two sides (draw_resolution_scale_threshold);
++      // the shader bakes each side's tile size and the conversion between them.
++      uint32_t dest_scale_native : 1;
++      uint32_t source_scale_native : 1;
+ 
+       // Last bits because this affects the pipeline layout - after sorting,
+       // only change it as fewer times as possible. Depth buffers have an
+@@ -648,6 +659,12 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
+       // texture layout) instead of the EDRAM buffer, doing the dump and the resolve copy in
+       // one pass. Only for bitwise (fast) resolve copies without resolution scaling.
+       uint32_t direct_resolve : 1;
++      // beatles patch 0010 (draw_resolution_scale_threshold): the source render target is
++      // native-scale, so dumping it to the scaled EDRAM layout duplicates its guest pixels.
++      uint32_t source_scale_native : 1;
++      // Address the destination (the EDRAM buffer, or the resolve destination for
++      // direct_resolve) with the plain 1x layout: a resolve whose sources are all native.
++      uint32_t native_layout : 1;
+     };
+ 
+     DumpPipelineKey() : key(0) { static_assert_size(*this, sizeof(key)); }
+@@ -838,12 +855,13 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
+                               bool draw_resolution_scaled,
+                               const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
+                               VulkanSharedMemory& shared_memory,
+-                              VulkanTextureCache& texture_cache);
++                              VulkanTextureCache& texture_cache, bool copy_native = false);
+ 
+   // Writes contents of host render targets within rectangles from
+   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
++  // native_layout (patch 0010): write the plain 1x EDRAM layout (all sources native).
+   bool DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
+-                         uint32_t dump_pitch);
++                         uint32_t dump_pitch, bool native_layout = false);
+ 
+   bool gamma_render_target_as_unorm16_ = false;
+ 
+diff --git i/src/graphics/pipeline/render_target/cache.cpp w/src/graphics/pipeline/render_target/cache.cpp
+index 953c5fd..7d56976 100644
+--- i/src/graphics/pipeline/render_target/cache.cpp
++++ w/src/graphics/pipeline/render_target/cache.cpp
+@@ -11,10 +11,13 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <chrono>
+ #include <cstring>
+ #include <iterator>
+ #include <tuple>
++#include <unordered_map>
+ #include <unordered_set>
++#include <vector>
+ #include <utility>
+ 
+ #include <rex/assert.h>
+@@ -41,6 +44,27 @@ REXCVAR_DEFINE_BOOL(direct_host_resolve, true, "GPU",
+                     "Resolve from host render targets directly to shared memory when possible")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++// beatles patch 0010, after xenia-edge 74db632.
++REXCVAR_DEFINE_INT32(draw_resolution_scale_threshold, 0, "GPU",
++                     "Surface pitch in pixels at or below which render targets are not upscaled "
++                     "by the resolution scale (small offscreen surfaces such as bloom chains "
++                     "and shadow maps); compared after alignment to 80-pixel EDRAM tiles. "
++                     "0 disables it. Host render targets only.")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
++// beatles patch 0010 (debug): every 10 seconds, log how many draws went to each surface
++// (pitch, MSAA, scale class, first color render target base), to see which surfaces
++// draw_resolution_scale_threshold makes native.
++REXCVAR_DEFINE_BOOL(draw_surface_profile, false, "GPU",
++                    "Debug: log the draws per render target surface every 10 seconds")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
++namespace {
++// Key: pitch in pixels (13 bits) | MSAA (2) | native (1) | depth used (1) | RT0 base (11).
++std::unordered_map<uint32_t, uint64_t> beatles_surface_draws;
++std::chrono::steady_clock::time_point beatles_surface_profile_start;
++}  // namespace
++
+ namespace rex::graphics {
+ 
+ void RenderTargetCache::GetPSIColorFormatInfo(xenos::ColorRenderTargetFormat format,
+@@ -397,6 +421,33 @@ void RenderTargetCache::BeginFrame() {
+   ResetAccumulatedRenderTargets();
+ }
+ 
++bool RenderTargetCache::IsScaleNativeForPitch(uint32_t pitch_tiles_at_32bpp,
++                                              xenos::MsaaSamples msaa_samples) const {
++  int32_t threshold = REXCVAR_GET(draw_resolution_scale_threshold);
++  if (threshold <= 0 || !IsDrawResolutionScaled() || GetPath() != Path::kHostRenderTargets) {
++    return false;
++  }
++  // The pitch is the only guest surface dimension that is reliably known: host render target
++  // heights cover all of EDRAM, and per-draw height estimates would flip a surface between
++  // classes and churn transfers.
++  uint32_t pitch_pixels_tile_aligned = RenderTargetKey::GetWidth(pitch_tiles_at_32bpp, msaa_samples);
++  return pitch_pixels_tile_aligned != 0 && pitch_pixels_tile_aligned <= uint32_t(threshold);
++}
++
++bool RenderTargetCache::IsDrawScaleNative() const {
++  if (REXCVAR_GET(draw_resolution_scale_threshold) <= 0) {
++    return false;
++  }
++  auto rb_surface_info = register_file().Get<reg::RB_SURFACE_INFO>();
++  // The same pitch normalization as in Update.
++  uint32_t msaa_samples_x_log2 = uint32_t(rb_surface_info.msaa_samples >= xenos::MsaaSamples::k4X);
++  uint32_t pitch_tiles_at_32bpp =
++      ((rb_surface_info.surface_pitch << msaa_samples_x_log2) +
++       (xenos::kEdramTileWidthSamples - 1)) /
++      xenos::kEdramTileWidthSamples;
++  return IsScaleNativeForPitch(pitch_tiles_at_32bpp, rb_surface_info.msaa_samples);
++}
++
+ bool RenderTargetCache::Update(bool is_rasterization_done,
+                                reg::RB_DEPTHCONTROL normalized_depth_control,
+                                uint32_t normalized_color_mask, const Shader& vertex_shader) {
+@@ -430,10 +481,46 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+   uint32_t pitch_tiles_at_32bpp =
+       ((pitch_pixels << msaa_samples_x_log2) + (xenos::kEdramTileWidthSamples - 1)) /
+       xenos::kEdramTileWidthSamples;
++  // The scale class of all the surfaces of this draw (patch 0010).
++  bool scale_native = IsScaleNativeForPitch(pitch_tiles_at_32bpp, msaa_samples);
++  if (REXCVAR_GET(draw_surface_profile) && is_rasterization_done) {
++    uint32_t profile_pitch =
++        RenderTargetKey::GetWidth(pitch_tiles_at_32bpp, msaa_samples) & 0x1FFF;
++    uint32_t rt0_base = regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[0])
++                            .color_base;
++    auto now = std::chrono::steady_clock::now();
++    if (beatles_surface_profile_start.time_since_epoch().count() == 0) {
++      beatles_surface_profile_start = now;
++    }
++    double seconds = std::chrono::duration<double>(now - beatles_surface_profile_start).count();
++    if (seconds >= 10.0) {
++      std::vector<std::pair<uint64_t, uint32_t>> sorted;
++      for (const auto& entry : beatles_surface_draws) {
++        sorted.emplace_back(entry.second, entry.first);
++      }
++      std::sort(sorted.rbegin(), sorted.rend());
++      REXGPU_INFO("surface profile: {:.1f} s, {} surfaces", seconds, sorted.size());
++      for (size_t i = 0; i < std::min(sorted.size(), size_t(16)); ++i) {
++        uint32_t k = sorted[i].second;
++        REXGPU_INFO(
++            "surface profile: {:8.1f} draws/s  pitch {:4} px  {}xMSAA  {}  {}  rt0 base {}",
++            double(sorted[i].first) / seconds, k & 0x1FFF, 1u << ((k >> 13) & 3),
++            (k >> 15) & 1 ? "native" : "scaled", (k >> 16) & 1 ? "depth" : "no depth", k >> 17);
++      }
++      beatles_surface_draws.clear();
++      beatles_surface_profile_start = now;
++    }
++    ++beatles_surface_draws[profile_pitch | (uint32_t(msaa_samples) << 13) |
++                            (uint32_t(scale_native) << 15) |
++                            (uint32_t(normalized_depth_control.z_enable ||
++                                      normalized_depth_control.stencil_enable)
++                             << 16) |
++                            ((rt0_base & 0x7FF) << 17)];
++  }
+   if (!interlock_barrier_only) {
+     uint32_t pitch_pixels_tile_aligned_scaled =
+         pitch_tiles_at_32bpp * (xenos::kEdramTileWidthSamples >> msaa_samples_x_log2) *
+-        draw_resolution_scale_x();
++        (scale_native ? 1 : draw_resolution_scale_x());
+     uint32_t max_render_target_width = GetMaxRenderTargetWidth();
+     if (pitch_pixels_tile_aligned_scaled > max_render_target_width) {
+       // TODO(Triang3l): If really needed for some game on some device, clamp
+@@ -639,6 +726,7 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+     rt_key.msaa_samples = msaa_samples;
+     rt_key.is_depth = rt_bit_index == 0;
+     rt_key.resource_format = resource_formats[rt_bit_index];
++    rt_key.scale_native = uint32_t(scale_native);
+     if (!interlock_barrier_only) {
+       RenderTarget* render_target = GetOrCreateRenderTarget(rt_key);
+       if (!render_target) {
+@@ -836,6 +924,25 @@ void RenderTargetCache::GetHostDepthStoreRectangleInfo(
+   group_count_y_out = (transfer_rectangle.height_pixels * pixel_size_y) >> 3;
+ }
+ 
++bool RenderTargetCache::IsResolveSourceNativeOnly(uint32_t base, uint32_t row_length,
++                                                  uint32_t rows, uint32_t pitch) const {
++  if (REXCVAR_GET(draw_resolution_scale_threshold) <= 0 || !IsDrawResolutionScaled() ||
++      GetPath() != Path::kHostRenderTargets) {
++    return false;
++  }
++  std::vector<ResolveCopyDumpRectangle> rectangles;
++  GetResolveCopyRectanglesToDump(base, row_length, rows, pitch, rectangles);
++  if (rectangles.empty()) {
++    return false;
++  }
++  for (const ResolveCopyDumpRectangle& rectangle : rectangles) {
++    if (!rectangle.render_target || !rectangle.render_target->key().scale_native) {
++      return false;
++    }
++  }
++  return true;
++}
++
+ void RenderTargetCache::GetResolveCopyRectanglesToDump(
+     uint32_t base, uint32_t row_length, uint32_t rows, uint32_t pitch,
+     std::vector<ResolveCopyDumpRectangle>& rectangles_out) const {
+@@ -980,7 +1087,8 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
+   }
+   uint32_t pitch_pixels =
+       pitch_tiles_at_32bpp * (xenos::kEdramTileWidthSamples >> msaa_samples_x_log2);
+-  uint32_t pitch_pixels_scaled = pitch_pixels * draw_resolution_scale_x();
++  bool scale_native = IsScaleNativeForPitch(pitch_tiles_at_32bpp, msaa_samples);
++  uint32_t pitch_pixels_scaled = pitch_pixels * (scale_native ? 1 : draw_resolution_scale_x());
+   uint32_t max_render_target_width = GetMaxRenderTargetWidth();
+   if (pitch_pixels_scaled > max_render_target_width) {
+     // TODO(Triang3l): If really needed for some game on some device, clamp the
+@@ -1080,6 +1188,7 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
+     depth_render_target_key.msaa_samples = msaa_samples;
+     depth_render_target_key.is_depth = 1;
+     depth_render_target_key.resource_format = resolve_info.depth_edram_info.format;
++    depth_render_target_key.scale_native = uint32_t(scale_native);
+     depth_render_target = GetOrCreateRenderTarget(depth_render_target_key);
+     if (!depth_render_target) {
+       // Failed to create the depth render target, don't clear it.
+@@ -1096,6 +1205,7 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
+     color_render_target_key.is_depth = 0;
+     color_render_target_key.resource_format = uint32_t(GetColorResourceFormat(
+         xenos::ColorRenderTargetFormat(resolve_info.color_edram_info.format)));
++    color_render_target_key.scale_native = uint32_t(scale_native);
+     color_render_target = GetOrCreateRenderTarget(color_render_target_key);
+     if (!color_render_target) {
+       // Failed to create the color render target, don't clear it.
+@@ -1185,7 +1295,11 @@ bool RenderTargetCache::WouldOwnershipChangeRequireTransfers(RenderTargetKey des
+   if (length_tiles == 0) {
+     return false;
+   }
+-  bool host_depth_encoding_different = dest.is_depth && GetPath() == Path::kHostRenderTargets &&
++  // Native-scale render targets (patch 0010) are kept out of host depth tracking, so the
++  // host depth of a range only ever holds data at the global scale and transfers never read
++  // host depth across scale classes.
++  bool host_depth_encoding_different = dest.is_depth && !dest.scale_native &&
++                                       GetPath() == Path::kHostRenderTargets &&
+                                        IsHostDepthEncodingDifferent(dest.GetDepthFormat());
+   auto would_require_transfers_in_extent = [&](uint32_t extent_start, uint32_t extent_end) -> bool {
+     // The map contains consecutive ranges, merged if the adjacent ones are the
+@@ -1250,7 +1364,11 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+   }
+   uint32_t dest_pitch_tiles = dest.GetPitchTiles();
+   bool dest_is_64bpp = dest.Is64bpp();
+-  bool host_depth_encoding_different = dest.is_depth && GetPath() == Path::kHostRenderTargets &&
++  // Native-scale render targets (patch 0010) are kept out of host depth tracking, so the
++  // host depth of a range only ever holds data at the global scale and transfers never read
++  // host depth across scale classes.
++  bool host_depth_encoding_different = dest.is_depth && !dest.scale_native &&
++                                       GetPath() == Path::kHostRenderTargets &&
+                                        IsHostDepthEncodingDifferent(dest.GetDepthFormat());
+   auto change_ownership_in_extent = [&](uint32_t extent_start, uint32_t extent_end) {
+     // The map contains consecutive ranges, merged if the adjacent ones are the
+diff --git i/src/graphics/pipeline/shader/spirv_translator.cpp w/src/graphics/pipeline/shader/spirv_translator.cpp
+index 1774f97..cb50482 100644
+--- i/src/graphics/pipeline/shader/spirv_translator.cpp
++++ w/src/graphics/pipeline/shader/spirv_translator.cpp
+@@ -2898,8 +2898,9 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
+   // TODO(Triang3l): More conditions - alpha to coverage (if RT 0 is written,
+   // and there's no early depth / stencil), depth writing in the fragment shader
+   // (per-sample if supported).
+-  bool memexport_resolution_scaled = current_shader().memexport_eM_written() &&
+-                                     (draw_resolution_scale_x_ > 1 || draw_resolution_scale_y_ > 1);
++  bool memexport_resolution_scaled =
++      current_shader().memexport_eM_written() &&
++      (GetCurrentDrawResolutionScaleX() > 1 || GetCurrentDrawResolutionScaleY() > 1);
+   if (edram_fragment_shader_interlock_ || param_gen_needed || memexport_resolution_scaled ||
+       float24_depth_from_fragment_coordinates || alpha_to_coverage_possible) {
+     input_fragment_coordinates_ = builder_->createVariable(spv::NoPrecision, spv::StorageClassInput,
+@@ -3097,8 +3098,10 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
+ 
+   if (current_shader().memexport_eM_written()) {
+     // Make sure memexport is done only once for a guest pixel.
++    const uint32_t draw_scale_x = GetCurrentDrawResolutionScaleX();
++    const uint32_t draw_scale_y = GetCurrentDrawResolutionScaleY();
+     uint32_t resolution_scaled_axes =
+-        uint32_t(draw_resolution_scale_x_ > 1) | (uint32_t(draw_resolution_scale_y_ > 1) << 1);
++        uint32_t(draw_scale_x > 1) | (uint32_t(draw_scale_y > 1) << 1);
+     if (resolution_scaled_axes) {
+       assert_true(input_fragment_coordinates_ != spv::NoResult);
+       spv::Id memexport_allowed = spv::NoResult;
+@@ -3115,11 +3118,11 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
+         spv::Id position_mod = builder_->createBinOp(
+             spv::OpUMod, type_uint_,
+             builder_->createUnaryOp(spv::OpConvertFToU, type_uint_, position),
+-            builder_->makeUintConstant(i ? draw_resolution_scale_y_ : draw_resolution_scale_x_));
++            builder_->makeUintConstant(i ? draw_scale_y : draw_scale_x));
+         spv::Id position_is_center =
+             builder_->createBinOp(spv::OpIEqual, type_bool_, position_mod,
+-                                  builder_->makeUintConstant(i ? (draw_resolution_scale_y_ >> 1)
+-                                                               : (draw_resolution_scale_x_ >> 1)));
++                                  builder_->makeUintConstant(i ? (draw_scale_y >> 1)
++                                                               : (draw_scale_x >> 1)));
+         memexport_allowed = memexport_allowed != spv::NoResult
+                                 ? builder_->createBinOp(spv::OpLogicalAnd, type_bool_,
+                                                         memexport_allowed, position_is_center)
+@@ -3210,10 +3213,10 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
+             builder_->createAccessChain(spv::StorageClassInput, input_fragment_coordinates_,
+                                         id_vector_temp_),
+             spv::NoPrecision));
+-    if (draw_resolution_scale_x_ > 1) {
++    if (GetCurrentDrawResolutionScaleX() > 1) {
+       param_gen_x = builder_->createNoContractionBinOp(
+           spv::OpFMul, type_float_, param_gen_x,
+-          builder_->makeFloatConstant(1.0f / float(draw_resolution_scale_x_)));
++          builder_->makeFloatConstant(1.0f / float(GetCurrentDrawResolutionScaleX())));
+     }
+     param_gen_x = builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+                                                    GLSLstd450FAbs, param_gen_x);
+@@ -3246,10 +3249,10 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
+             builder_->createAccessChain(spv::StorageClassInput, input_fragment_coordinates_,
+                                         id_vector_temp_),
+             spv::NoPrecision));
+-    if (draw_resolution_scale_y_ > 1) {
++    if (GetCurrentDrawResolutionScaleY() > 1) {
+       param_gen_y = builder_->createNoContractionBinOp(
+           spv::OpFMul, type_float_, param_gen_y,
+-          builder_->makeFloatConstant(1.0f / float(draw_resolution_scale_y_)));
++          builder_->makeFloatConstant(1.0f / float(GetCurrentDrawResolutionScaleY())));
+     }
+     param_gen_y = builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+                                                    GLSLstd450FAbs, param_gen_y);
+diff --git i/src/graphics/pipeline/texture/cache.cpp w/src/graphics/pipeline/texture/cache.cpp
+index 76f5600..909e181 100644
+--- i/src/graphics/pipeline/texture/cache.cpp
++++ w/src/graphics/pipeline/texture/cache.cpp
+@@ -318,7 +318,8 @@ void TextureCache::BeginFrame() {
+   ResetTextureBindings();
+ }
+ 
+-void TextureCache::MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_unscaled) {
++void TextureCache::MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_unscaled,
++                                       bool resolution_scaled) {
+   if (length_unscaled == 0) {
+     return;
+   }
+@@ -339,8 +340,17 @@ void TextureCache::MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_
+       if (i == block_last && (page_last & 31) != 31) {
+         add_bits &= (UINT32_C(1) << ((page_last & 31) + 1)) - 1;
+       }
+-      scaled_resolve_pages_[i] |= add_bits;
+-      scaled_resolve_pages_l2_[i >> 6] |= UINT64_C(1) << (i & 63);
++      if (resolution_scaled) {
++        scaled_resolve_pages_[i] |= add_bits;
++        scaled_resolve_pages_l2_[i >> 6] |= UINT64_C(1) << (i & 63);
++      } else {
++        // Native resolve data is in shared memory - clear the range the way the CPU write
++        // watch does.
++        scaled_resolve_pages_[i] &= ~add_bits;
++        if (!scaled_resolve_pages_[i]) {
++          scaled_resolve_pages_l2_[i >> 6] &= ~(UINT64_C(1) << (i & 63));
++        }
++      }
+     }
+   }
+ 
+diff --git i/src/graphics/vulkan/command_processor.cpp w/src/graphics/vulkan/command_processor.cpp
+index 4c42868..ac00005 100644
+--- i/src/graphics/vulkan/command_processor.cpp
++++ w/src/graphics/vulkan/command_processor.cpp
+@@ -4253,8 +4253,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+ 
+   bool host_render_targets_used =
+       render_target_cache_->GetPath() == RenderTargetCache::Path::kHostRenderTargets;
+-  uint32_t draw_resolution_scale_x = texture_cache_->draw_resolution_scale_x();
+-  uint32_t draw_resolution_scale_y = texture_cache_->draw_resolution_scale_y();
++  // beatles patch 0010: the scale of this draw, 1x under draw_resolution_scale_threshold.
++  uint32_t draw_resolution_scale_x = render_target_cache_->GetDrawScaleX();
++  uint32_t draw_resolution_scale_y = render_target_cache_->GetDrawScaleY();
++  if (active_occlusion_query_.valid && !active_occlusion_query_.scale_area) {
++    active_occlusion_query_.scale_area = draw_resolution_scale_x * draw_resolution_scale_y;
++  }
+ 
+   // Get dynamic rasterizer state.
+   draw_util::ViewportInfo viewport_info;
+@@ -4755,8 +4759,9 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+   const VkDevice device = vulkan_device->device();
+ 
+   uint32_t written_address, written_length;
++  bool written_scaled = false;
+   if (!render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_, written_address,
+-                                     written_length)) {
++                                     written_length, &written_scaled)) {
+     return false;
+   }
+ 
+@@ -4821,7 +4826,8 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+     return true;
+   };
+ 
+-  bool is_scaled = texture_cache_->IsDrawResolutionScaled();
++  // patch 0010: native resolves went to shared memory and are read back directly.
++  bool is_scaled = written_scaled;
+   uint64_t resolve_key = MakeReadbackResolveKey(written_address, written_length);
+   ReadbackBuffer& readback = readback_buffers_[resolve_key];
+   readback.last_used_frame = frame_current_;
+@@ -5217,6 +5223,7 @@ bool VulkanCommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_addres
+   }
+ 
+   uint32_t host_index = active_occlusion_query_.host_index;
++  uint32_t query_scale_area = active_occlusion_query_.scale_area;
+   active_occlusion_query_ = {};
+ 
+   if (!BeginSubmission(true)) {
+@@ -5256,18 +5263,21 @@ bool VulkanCommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_addres
+   }
+ 
+   const uint64_t* results = reinterpret_cast<const uint64_t*>(occlusion_query_readback_mapping_);
+-  uint64_t samples = NormalizeOcclusionSamples(results[host_index]);
++  uint64_t samples = NormalizeOcclusionSamples(results[host_index], query_scale_area);
+   WriteGuestOcclusionResult(sample_count_address, samples);
+   return true;
+ }
+ 
+-uint64_t VulkanCommandProcessor::NormalizeOcclusionSamples(uint64_t samples) const {
++uint64_t VulkanCommandProcessor::NormalizeOcclusionSamples(uint64_t samples,
++                                                          uint32_t scale_area) const {
+   if (samples == 0 || !texture_cache_) {
+     return samples;
+   }
+-  uint64_t scale_x = texture_cache_->draw_resolution_scale_x();
+-  uint64_t scale_y = texture_cache_->draw_resolution_scale_y();
+-  uint64_t scale = scale_x * scale_y;
++  uint64_t scale = scale_area;
++  if (!scale) {
++    scale = uint64_t(texture_cache_->draw_resolution_scale_x()) *
++            texture_cache_->draw_resolution_scale_y();
++  }
+   if (scale <= 1) {
+     return samples;
+   }
+@@ -6016,8 +6026,9 @@ void VulkanCommandProcessor::UpdateDynamicState(const draw_util::ViewportInfo& v
+ #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+ 
+   const RegisterFile& regs = *register_file_;
+-  uint32_t draw_resolution_scale_x = texture_cache_ ? texture_cache_->draw_resolution_scale_x() : 1;
+-  uint32_t draw_resolution_scale_y = texture_cache_ ? texture_cache_->draw_resolution_scale_y() : 1;
++  // The scale of this draw (patch 0010).
++  uint32_t draw_resolution_scale_x = render_target_cache_->GetDrawScaleX();
++  uint32_t draw_resolution_scale_y = render_target_cache_->GetDrawScaleY();
+ 
+   // Window parameters.
+   // http://ftp.tku.edu.tw/NetBSD/NetBSD-current/xsrc/external/mit/xf86-video-ati/dist/src/r600_reg_auto_r6xx.h
+@@ -6243,8 +6254,9 @@ void VulkanCommandProcessor::UpdateSystemConstantValues(
+ 
+   bool edram_fragment_shader_interlock =
+       render_target_cache_->GetPath() == RenderTargetCache::Path::kPixelShaderInterlock;
+-  uint32_t draw_resolution_scale_x = texture_cache_->draw_resolution_scale_x();
+-  uint32_t draw_resolution_scale_y = texture_cache_->draw_resolution_scale_y();
++  // The scale of this draw (patch 0010).
++  uint32_t draw_resolution_scale_x = render_target_cache_->GetDrawScaleX();
++  uint32_t draw_resolution_scale_y = render_target_cache_->GetDrawScaleY();
+ 
+   // Get the color info register values for each render target. Also, for FSI,
+   // exclude components that don't exist in the format from the write mask.
+diff --git i/src/graphics/vulkan/pipeline_cache.cpp w/src/graphics/vulkan/pipeline_cache.cpp
+index 91ac08f..06d8c39 100644
+--- i/src/graphics/vulkan/pipeline_cache.cpp
++++ w/src/graphics/vulkan/pipeline_cache.cpp
+@@ -988,6 +988,9 @@ SpirvShaderTranslator::Modification VulkanPipelineCache::GetCurrentPixelShaderMo
+   }
+ 
+   if (render_target_cache_.GetPath() == RenderTargetCache::Path::kHostRenderTargets) {
++    // beatles patch 0010: draws under draw_resolution_scale_threshold render at 1x.
++    modification.pixel.resolution_scale_native =
++        uint32_t(render_target_cache_.IsDrawScaleNative());
+     using DepthStencilMode = SpirvShaderTranslator::Modification::DepthStencilMode;
+     if (render_target_cache_.depth_float24_convert_in_pixel_shader() &&
+         normalized_depth_control.z_enable &&
+diff --git i/src/graphics/vulkan/render_target_cache.cpp w/src/graphics/vulkan/render_target_cache.cpp
+index cabf6dc..620871b 100644
+--- i/src/graphics/vulkan/render_target_cache.cpp
++++ w/src/graphics/vulkan/render_target_cache.cpp
+@@ -599,6 +599,18 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
+     Shutdown();
+     return false;
+   }
++  // beatles patch 0010: a second layout (the full push constants of the unscaled shaders)
++  // for resolves whose sources are all native-scale (draw_resolution_scale_threshold).
++  if (draw_resolution_scaled) {
++    resolve_copy_push_constant_range.size = sizeof(draw_util::ResolveCopyShaderConstants);
++    if (dfn.vkCreatePipelineLayout(device, &resolve_copy_pipeline_layout_create_info, nullptr,
++                                   &resolve_copy_native_pipeline_layout_) != VK_SUCCESS) {
++      REXGPU_ERROR(
++          "VulkanRenderTargetCache: Failed to create the native resolve copy pipeline layout");
++      Shutdown();
++      return false;
++    }
++  }
+ 
+   // Direct resolve pipeline layouts (destination storage buffer + source image).
+   auto create_direct_resolve_pipeline_layout = [&](VkDescriptorSetLayout source_layout,
+@@ -655,6 +667,22 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
+     vulkan_device->SetObjectName(VK_OBJECT_TYPE_PIPELINE, resolve_copy_pipeline,
+                                  resolve_copy_shader_info.debug_name);
+     resolve_copy_pipelines_[i] = resolve_copy_pipeline;
++    if (draw_resolution_scaled) {
++      // beatles patch 0010: the unscaled variant for fully native resolves.
++      VkPipeline resolve_copy_native_pipeline = ui::vulkan::util::CreateComputePipeline(
++          vulkan_device, resolve_copy_native_pipeline_layout_, resolve_copy_shader_code.unscaled,
++          resolve_copy_shader_code.unscaled_size_bytes);
++      if (resolve_copy_native_pipeline == VK_NULL_HANDLE) {
++        REXGPU_ERROR(
++            "VulkanRenderTargetCache: Failed to create the native resolve copy pipeline {}",
++            resolve_copy_shader_info.debug_name);
++        Shutdown();
++        return false;
++      }
++      vulkan_device->SetObjectName(VK_OBJECT_TYPE_PIPELINE, resolve_copy_native_pipeline,
++                                   resolve_copy_shader_info.debug_name);
++      resolve_copy_native_pipelines_[i] = resolve_copy_native_pipeline;
++    }
+   }
+ 
+   if (path_ == Path::kHostRenderTargets) {
+@@ -1081,6 +1109,12 @@ void VulkanRenderTargetCache::Shutdown(bool from_destructor) {
+   }
+   render_passes_.clear();
+ 
++  for (VkPipeline& resolve_copy_native_pipeline : resolve_copy_native_pipelines_) {
++    ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device,
++                                           resolve_copy_native_pipeline);
++  }
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device,
++                                         resolve_copy_native_pipeline_layout_);
+   for (VkPipeline& resolve_copy_pipeline : resolve_copy_pipelines_) {
+     ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, resolve_copy_pipeline);
+   }
+@@ -1144,9 +1178,13 @@ void VulkanRenderTargetCache::EndSubmission() {
+ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+                                       VulkanSharedMemory& shared_memory,
+                                       VulkanTextureCache& texture_cache,
+-                                      uint32_t& written_address_out, uint32_t& written_length_out) {
++                                      uint32_t& written_address_out, uint32_t& written_length_out,
++                                      bool* written_scaled_out) {
+   written_address_out = 0;
+   written_length_out = 0;
++  if (written_scaled_out) {
++    *written_scaled_out = false;
++  }
+ 
+   bool draw_resolution_scaled = IsDrawResolutionScaled();
+ 
+@@ -1170,11 +1208,28 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+   // Copying.
+   bool copied = false;
+   if (resolve_info.copy_dest_extent_length) {
++    // beatles patch 0010: if every render target owning the source is native-scale
++    // (draw_resolution_scale_threshold), copy at 1x into shared memory, with the resolve
++    // info redone at 1x so the scale-dependent fields match the unscaled copy shaders.
++    bool copy_native = false;
++    if (GetPath() == Path::kHostRenderTargets && draw_resolution_scaled) {
++      uint32_t span_base, span_row_length_used, span_rows, span_pitch;
++      resolve_info.GetCopyEdramTileSpan(span_base, span_row_length_used, span_rows, span_pitch);
++      copy_native =
++          IsResolveSourceNativeOnly(span_base, span_row_length_used, span_rows, span_pitch);
++      if (copy_native &&
++          !draw_util::GetResolveInfo(register_file(), memory, 1, 1,
++                                     IsFixedRG16TruncatedToMinus1To1(),
++                                     IsFixedRGBA16TruncatedToMinus1To1(), resolve_info)) {
++        return false;
++      }
++    }
++    const bool copy_dest_scaled = draw_resolution_scaled && !copy_native;
+     draw_util::ResolveCopyShaderConstants copy_shader_constants;
+     uint32_t copy_group_count_x, copy_group_count_y;
+-    draw_util::ResolveCopyShaderIndex copy_shader =
+-        resolve_info.GetCopyShader(draw_resolution_scale_x(), draw_resolution_scale_y(),
+-                                   copy_shader_constants, copy_group_count_x, copy_group_count_y);
++    draw_util::ResolveCopyShaderIndex copy_shader = resolve_info.GetCopyShader(
++        copy_native ? 1 : draw_resolution_scale_x(), copy_native ? 1 : draw_resolution_scale_y(),
++        copy_shader_constants, copy_group_count_x, copy_group_count_y);
+     assert_true(copy_group_count_x && copy_group_count_y);
+     if (copy_shader != draw_util::ResolveCopyShaderIndex::kUnknown) {
+       const draw_util::ResolveCopyShaderInfo& copy_shader_info =
+@@ -1182,9 +1237,9 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+       bool direct_resolved = false;
+       if (GetPath() == Path::kHostRenderTargets) {
+         if (REXCVAR_GET(direct_host_resolve)) {
+-          direct_resolved = TryResolveCopyDirectly(resolve_info, copy_shader,
+-                                                   draw_resolution_scaled, copy_shader_constants,
+-                                                   shared_memory, texture_cache);
++          direct_resolved = TryResolveCopyDirectly(resolve_info, copy_shader, copy_dest_scaled,
++                                                   copy_shader_constants, shared_memory,
++                                                   texture_cache, copy_native);
+           if (direct_resolved) {
+             ++direct_resolve_success_count_;
+           } else {
+@@ -1199,7 +1254,8 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+           uint32_t dump_rows;
+           uint32_t dump_pitch;
+           resolve_info.GetCopyEdramTileSpan(dump_base, dump_row_length_used, dump_rows, dump_pitch);
+-          if (!DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch)) {
++          if (!DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch,
++                                 copy_native)) {
+             REXGPU_ERROR("VulkanRenderTargetCache: Failed to dump host render targets for resolve");
+             return false;
+           }
+@@ -1209,7 +1265,10 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+       if (direct_resolved) {
+         // beatles patch 0007: the data is already in shared memory.
+         texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
+-                                          resolve_info.copy_dest_extent_length);
++                                          resolve_info.copy_dest_extent_length, copy_dest_scaled);
++        if (written_scaled_out) {
++          *written_scaled_out = copy_dest_scaled;
++        }
+         written_address_out = resolve_info.copy_dest_extent_start;
+         written_length_out = resolve_info.copy_dest_extent_length;
+         copied = true;
+@@ -1222,7 +1281,7 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+       uint64_t copy_dest_range_length = copy_dest_range_unscaled;
+       uint64_t copy_dest_use_start = resolve_info.copy_dest_extent_start;
+       uint64_t copy_dest_use_length = resolve_info.copy_dest_extent_length;
+-      if (draw_resolution_scaled) {
++      if (copy_dest_scaled) {
+         if (!texture_cache.GetScaledResolveRange(
+                 resolve_info.copy_dest_base, copy_dest_range_unscaled,
+                 copy_shader_info.dest_bpe_log2, copy_dest_base, copy_dest_range_length) ||
+@@ -1239,7 +1298,7 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+ 
+       // Make sure there is memory to write to.
+       bool copy_dest_committed;
+-      if (draw_resolution_scaled) {
++      if (copy_dest_scaled) {
+         copy_dest_committed = texture_cache.CommitScaledResolveRange(
+             resolve_info.copy_dest_base, copy_dest_range_unscaled, copy_shader_info.dest_bpe_log2);
+       } else {
+@@ -1260,7 +1319,7 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+         if (descriptor_set_dest != VK_NULL_HANDLE) {
+           // Write the destination descriptor.
+           VkDescriptorBufferInfo write_descriptor_set_dest_buffer_info;
+-          write_descriptor_set_dest_buffer_info.buffer = draw_resolution_scaled
++          write_descriptor_set_dest_buffer_info.buffer = copy_dest_scaled
+                                                              ? texture_cache.scaled_resolve_buffer()
+                                                              : shared_memory.buffer();
+           write_descriptor_set_dest_buffer_info.offset = copy_dest_base;
+@@ -1279,7 +1338,7 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+           dfn.vkUpdateDescriptorSets(device, 1, &write_descriptor_set_dest, 0, nullptr);
+ 
+           // Submit the resolve.
+-          if (draw_resolution_scaled) {
++          if (copy_dest_scaled) {
+             texture_cache.UseScaledResolveBufferForWrite(copy_dest_use_start, copy_dest_use_length);
+           } else {
+             shared_memory.Use(VulkanSharedMemory::Usage::kComputeWrite,
+@@ -1287,17 +1346,22 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+                                                             uint32_t(copy_dest_use_length)));
+           }
+           UseEdramBuffer(EdramBufferUsage::kComputeRead);
++          // Fully native resolves use the unscaled shaders with the full push constants
++          // (patch 0010).
++          VkPipelineLayout copy_pipeline_layout =
++              copy_native ? resolve_copy_native_pipeline_layout_ : resolve_copy_pipeline_layout_;
+           command_processor_.BindExternalComputePipeline(
+-              resolve_copy_pipelines_[size_t(copy_shader)]);
++              copy_native ? resolve_copy_native_pipelines_[size_t(copy_shader)]
++                          : resolve_copy_pipelines_[size_t(copy_shader)]);
+           VkDescriptorSet descriptor_sets[kResolveCopyDescriptorSetCount] = {};
+           descriptor_sets[kResolveCopyDescriptorSetEdram] = edram_storage_buffer_descriptor_set_;
+           descriptor_sets[kResolveCopyDescriptorSetDest] = descriptor_set_dest;
+           command_buffer.CmdVkBindDescriptorSets(
+-              VK_PIPELINE_BIND_POINT_COMPUTE, resolve_copy_pipeline_layout_, 0,
++              VK_PIPELINE_BIND_POINT_COMPUTE, copy_pipeline_layout, 0,
+               uint32_t(rex::countof(descriptor_sets)), descriptor_sets, 0, nullptr);
+-          if (draw_resolution_scaled) {
++          if (copy_dest_scaled) {
+             command_buffer.CmdVkPushConstants(
+-                resolve_copy_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
++                copy_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                 sizeof(copy_shader_constants.dest_relative), &copy_shader_constants.dest_relative);
+           } else {
+             // TODO(Triang3l): Proper dest_base in case of one 512 MB shared
+@@ -1306,7 +1370,7 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+             copy_shader_constants.dest_base -=
+                 uint32_t(write_descriptor_set_dest_buffer_info.offset);
+             command_buffer.CmdVkPushConstants(
+-                resolve_copy_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
++                copy_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                 sizeof(copy_shader_constants), &copy_shader_constants);
+           }
+           command_processor_.SubmitBarriers(true);
+@@ -1318,7 +1382,11 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+ 
+           // Invalidate textures and mark the range as scaled if needed.
+           texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
+-                                            resolve_info.copy_dest_extent_length);
++                                            resolve_info.copy_dest_extent_length,
++                                            copy_dest_scaled);
++          if (written_scaled_out) {
++            *written_scaled_out = copy_dest_scaled;
++          }
+           written_address_out = resolve_info.copy_dest_extent_start;
+           written_length_out = resolve_info.copy_dest_extent_length;
+           copied = true;
+@@ -1900,9 +1968,10 @@ RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(Ren
+   image_create_info.pNext = nullptr;
+   image_create_info.flags = 0;
+   image_create_info.imageType = VK_IMAGE_TYPE_2D;
+-  image_create_info.extent.width = key.GetWidth() * draw_resolution_scale_x();
++  // patch 0010: native-scale render targets are created at 1x.
++  image_create_info.extent.width = key.GetWidth() * GetKeyScaleX(key);
+   image_create_info.extent.height =
+-      GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples) * draw_resolution_scale_y();
++      GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples) * GetKeyScaleY(key);
+   image_create_info.extent.depth = 1;
+   image_create_info.mipLevels = 1;
+   image_create_info.arrayLayers = 1;
+@@ -2297,10 +2366,18 @@ VulkanRenderTargetCache::GetHostRenderTargetsFramebuffer(
+   framebuffer_create_info.attachmentCount = attachment_count;
+   framebuffer_create_info.pAttachments = attachments;
+   VkExtent2D host_extent;
++  // patch 0010: the scale class is a function of the pitch and the MSAA mode, so a
++  // framebuffer never mixes classes and its key needs no scale bit.
++  uint32_t framebuffer_scale_x = draw_resolution_scale_x();
++  uint32_t framebuffer_scale_y = draw_resolution_scale_y();
+   if (pitch_tiles_at_32bpp) {
+     host_extent.width =
+         RenderTargetKey::GetWidth(pitch_tiles_at_32bpp, render_pass_key.msaa_samples);
+     host_extent.height = GetRenderTargetHeight(pitch_tiles_at_32bpp, render_pass_key.msaa_samples);
++    if (IsScaleNativeForPitch(pitch_tiles_at_32bpp, render_pass_key.msaa_samples)) {
++      framebuffer_scale_x = 1;
++      framebuffer_scale_y = 1;
++    }
+   } else {
+     assert_zero(render_pass_key.depth_and_color_used);
+     // Still needed for occlusion queries.
+@@ -2310,9 +2387,9 @@ VulkanRenderTargetCache::GetHostRenderTargetsFramebuffer(
+   // Limiting to the device limit for the case of no attachments, for which
+   // there's no limit imposed by the sizes of the attachments that have been
+   // created successfully.
+-  host_extent.width = std::min(host_extent.width * draw_resolution_scale_x(),
++  host_extent.width = std::min(host_extent.width * framebuffer_scale_x,
+                                device_properties.maxFramebufferWidth);
+-  host_extent.height = std::min(host_extent.height * draw_resolution_scale_y(),
++  host_extent.height = std::min(host_extent.height * framebuffer_scale_y,
+                                 device_properties.maxFramebufferHeight);
+   framebuffer_create_info.width = host_extent.width;
+   framebuffer_create_info.height = host_extent.height;
+@@ -2645,8 +2722,17 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
+   // Working with unsigned numbers for simplicity now, bitcasting to signed will
+   // be done at texture fetch.
+ 
+-  uint32_t tile_width_samples = xenos::kEdramTileWidthSamples * draw_resolution_scale_x();
+-  uint32_t tile_height_samples = xenos::kEdramTileHeightSamples * draw_resolution_scale_y();
++  // beatles patch 0010: the two sides of a transfer may be in different scale classes
++  // (draw_resolution_scale_threshold). The host depth source always has the destination's
++  // scale, since native render targets do not track host depth.
++  uint32_t dest_scale_x = key.dest_scale_native ? 1 : draw_resolution_scale_x();
++  uint32_t dest_scale_y = key.dest_scale_native ? 1 : draw_resolution_scale_y();
++  uint32_t source_scale_x = key.source_scale_native ? 1 : draw_resolution_scale_x();
++  uint32_t source_scale_y = key.source_scale_native ? 1 : draw_resolution_scale_y();
++  uint32_t dest_tile_width_samples = xenos::kEdramTileWidthSamples * dest_scale_x;
++  uint32_t dest_tile_height_samples = xenos::kEdramTileHeightSamples * dest_scale_y;
++  uint32_t source_tile_width_samples = xenos::kEdramTileWidthSamples * source_scale_x;
++  uint32_t source_tile_height_samples = xenos::kEdramTileHeightSamples * source_scale_y;
+ 
+   // Split the destination pixel index into 32bpp tile and 32bpp-tile-relative
+   // pixel index.
+@@ -2666,7 +2752,7 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
+                                   uint_vector_temp));
+   spv::Id dest_pixel_x = builder.createCompositeExtract(dest_pixel_coord, type_uint, 0);
+   spv::Id const_dest_tile_width_pixels = builder.makeUintConstant(
+-      tile_width_samples >>
++      dest_tile_width_samples >>
+       (uint32_t(dest_is_64bpp) + uint32_t(key.dest_msaa_samples >= xenos::MsaaSamples::k4X)));
+   spv::Id dest_tile_index_x =
+       builder.createBinOp(spv::OpUDiv, type_uint, dest_pixel_x, const_dest_tile_width_pixels);
+@@ -2674,7 +2760,7 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
+       builder.createBinOp(spv::OpUMod, type_uint, dest_pixel_x, const_dest_tile_width_pixels);
+   spv::Id dest_pixel_y = builder.createCompositeExtract(dest_pixel_coord, type_uint, 1);
+   spv::Id const_dest_tile_height_pixels = builder.makeUintConstant(
+-      tile_height_samples >> uint32_t(key.dest_msaa_samples >= xenos::MsaaSamples::k2X));
++      dest_tile_height_samples >> uint32_t(key.dest_msaa_samples >= xenos::MsaaSamples::k2X));
+   spv::Id dest_tile_index_y =
+       builder.createBinOp(spv::OpUDiv, type_uint, dest_pixel_y, const_dest_tile_height_pixels);
+   spv::Id dest_tile_pixel_y =
+@@ -2721,6 +2807,35 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
+   // - Native 2x: top is 1 in Vulkan, bottom is 0.
+   // - 2x as 4x: top is 0, bottom is 3.
+ 
++  // patch 0010: if the scale classes differ, convert the tile-local pixel coordinates to the
++  // source scale space - the remappings below transform between two layouts of one scale.
++  // The destination-space coordinates are restored afterwards for the host depth source.
++  // Sample indices do not change.
++  spv::Id dest_space_tile_pixel_x = dest_tile_pixel_x;
++  spv::Id dest_space_tile_pixel_y = dest_tile_pixel_y;
++  if (key.source_scale_native != key.dest_scale_native) {
++    if (key.dest_scale_native) {
++      // Native destination reading a scaled source - the center host pixel of each guest
++      // pixel, like memexport and the resolve downscale.
++      dest_tile_pixel_x = builder.createBinOp(
++          spv::OpIAdd, type_uint,
++          builder.createBinOp(spv::OpIMul, type_uint, dest_tile_pixel_x,
++                              builder.makeUintConstant(source_scale_x)),
++          builder.makeUintConstant(source_scale_x >> 1));
++      dest_tile_pixel_y = builder.createBinOp(
++          spv::OpIAdd, type_uint,
++          builder.createBinOp(spv::OpIMul, type_uint, dest_tile_pixel_y,
++                              builder.makeUintConstant(source_scale_y)),
++          builder.makeUintConstant(source_scale_y >> 1));
++    } else {
++      // Scaled destination reading a native source - duplicate the guest pixels.
++      dest_tile_pixel_x = builder.createBinOp(spv::OpUDiv, type_uint, dest_tile_pixel_x,
++                                              builder.makeUintConstant(dest_scale_x));
++      dest_tile_pixel_y = builder.createBinOp(spv::OpUDiv, type_uint, dest_tile_pixel_y,
++                                              builder.makeUintConstant(dest_scale_y));
++    }
++  }
++
+   spv::Id source_sample_id = dest_sample_id;
+   spv::Id source_tile_pixel_x = dest_tile_pixel_x;
+   spv::Id source_tile_pixel_y = dest_tile_pixel_y;
+@@ -2997,6 +3112,11 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
+     }
+   }
+ 
++  // The source coordinates are derived - the host depth source path below needs the
++  // destination-space coordinates back (patch 0010).
++  dest_tile_pixel_x = dest_space_tile_pixel_x;
++  dest_tile_pixel_y = dest_space_tile_pixel_y;
++
+   uint32_t source_pixel_width_dwords_log2 =
+       uint32_t(key.source_msaa_samples >= xenos::MsaaSamples::k4X) + uint32_t(source_is_64bpp);
+ 
+@@ -3004,7 +3124,7 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
+     // Copying between color and depth / stencil - swap 40-32bpp-sample columns
+     // in the pixel index within the source 32bpp tile.
+     uint32_t source_32bpp_tile_half_pixels =
+-        tile_width_samples >> (1 + source_pixel_width_dwords_log2);
++        source_tile_width_samples >> (1 + source_pixel_width_dwords_log2);
+     source_tile_pixel_x = builder.createUnaryOp(
+         spv::OpBitcast, type_uint,
+         builder.createBinOp(
+@@ -3051,7 +3171,7 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
+           spv::OpIAdd, type_uint,
+           builder.createBinOp(
+               spv::OpIMul, type_uint,
+-              builder.makeUintConstant(tile_width_samples >> source_pixel_width_dwords_log2),
++              builder.makeUintConstant(source_tile_width_samples >> source_pixel_width_dwords_log2),
+               source_tile_index_x),
+           source_tile_pixel_x));
+   spv::Id source_pixel_y_int = builder.createUnaryOp(
+@@ -3060,7 +3180,7 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
+           spv::OpIAdd, type_uint,
+           builder.createBinOp(
+               spv::OpIMul, type_uint,
+-              builder.makeUintConstant(tile_height_samples >> uint32_t(key.source_msaa_samples >=
++              builder.makeUintConstant(source_tile_height_samples >> uint32_t(key.source_msaa_samples >=
+                                                                        xenos::MsaaSamples::k2X)),
+               source_tile_index_y),
+           source_tile_pixel_y));
+@@ -4057,7 +4177,7 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
+                 builder.createBinOp(
+                     spv::OpIAdd, type_uint,
+                     builder.createBinOp(spv::OpIMul, type_uint,
+-                                        builder.makeUintConstant(tile_width_samples >>
++                                        builder.makeUintConstant(dest_tile_width_samples >>
+                                                                  uint32_t(key.source_msaa_samples >=
+                                                                           xenos::MsaaSamples::k4X)),
+                                         host_depth_source_tile_index_x),
+@@ -4067,7 +4187,7 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
+                 builder.createBinOp(
+                     spv::OpIAdd, type_uint,
+                     builder.createBinOp(spv::OpIMul, type_uint,
+-                                        builder.makeUintConstant(tile_height_samples >>
++                                        builder.makeUintConstant(dest_tile_height_samples >>
+                                                                  uint32_t(key.source_msaa_samples >=
+                                                                           xenos::MsaaSamples::k2X)),
+                                         host_depth_source_tile_index_y),
+@@ -4127,12 +4247,12 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
+                 spv::OpIAdd, type_uint,
+                 builder.createBinOp(
+                     spv::OpIMul, type_uint,
+-                    builder.makeUintConstant(tile_width_samples * tile_height_samples),
++                    builder.makeUintConstant(dest_tile_width_samples * dest_tile_height_samples),
+                     dest_tile_index),
+                 builder.createBinOp(
+                     spv::OpIAdd, type_uint,
+                     builder.createBinOp(spv::OpIMul, type_uint,
+-                                        builder.makeUintConstant(tile_width_samples),
++                                        builder.makeUintConstant(dest_tile_width_samples),
+                                         dest_tile_sample_y),
+                     dest_tile_sample_x));
+             id_vector_temp.clear();
+@@ -4592,16 +4712,27 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+   bool resolve_clear_needed = render_target_resolve_clear_values && resolve_clear_rectangle;
+   VkClearRect resolve_clear_rect;
+   if (resolve_clear_needed) {
++    // patch 0010: all the render targets of one resolve clear share the pitch and thus the
++    // scale class - take the scale from whichever is there.
++    uint32_t resolve_clear_scale_x = draw_resolution_scale_x();
++    uint32_t resolve_clear_scale_y = draw_resolution_scale_y();
++    for (uint32_t i = 0; i < render_target_count; ++i) {
++      if (render_targets[i]) {
++        resolve_clear_scale_x = GetKeyScaleX(render_targets[i]->key());
++        resolve_clear_scale_y = GetKeyScaleY(render_targets[i]->key());
++        break;
++      }
++    }
+     // Assuming the rectangle is already clamped by the setup function from the
+     // common render target cache.
+     resolve_clear_rect.rect.offset.x =
+-        int32_t(resolve_clear_rectangle->x_pixels * draw_resolution_scale_x());
++        int32_t(resolve_clear_rectangle->x_pixels * resolve_clear_scale_x);
+     resolve_clear_rect.rect.offset.y =
+-        int32_t(resolve_clear_rectangle->y_pixels * draw_resolution_scale_y());
++        int32_t(resolve_clear_rectangle->y_pixels * resolve_clear_scale_y);
+     resolve_clear_rect.rect.extent.width =
+-        resolve_clear_rectangle->width_pixels * draw_resolution_scale_x();
++        resolve_clear_rectangle->width_pixels * resolve_clear_scale_x;
+     resolve_clear_rect.rect.extent.height =
+-        resolve_clear_rectangle->height_pixels * draw_resolution_scale_y();
++        resolve_clear_rectangle->height_pixels * resolve_clear_scale_y;
+     resolve_clear_rect.baseArrayLayer = 0;
+     resolve_clear_rect.layerCount = 1;
+   }
+@@ -4883,6 +5014,7 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+       TransferShaderKey new_transfer_shader_key;
+       new_transfer_shader_key.dest_msaa_samples = dest_rt_key.msaa_samples;
+       new_transfer_shader_key.dest_resource_format = dest_rt_key.resource_format;
++      new_transfer_shader_key.dest_scale_native = dest_rt_key.scale_native;  // patch 0010
+       uint32_t stencil_clear_rectangle_count = 0;
+       for (uint32_t j = 0; j <= uint32_t(need_stencil_bit_draws); ++j) {
+         // j == 0 - color or depth.
+@@ -4915,6 +5047,7 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+           RenderTargetKey source_rt_key = source_vulkan_rt.key();
+           new_transfer_shader_key.source_msaa_samples = source_rt_key.msaa_samples;
+           new_transfer_shader_key.source_resource_format = source_rt_key.resource_format;
++          new_transfer_shader_key.source_scale_native = source_rt_key.scale_native;  // 0010
+           bool host_depth_source_is_copy = host_depth_source_vulkan_rt == &dest_vulkan_rt;
+           // The host depth copy buffer has only raw samples.
+           new_transfer_shader_key.host_depth_source_msaa_samples =
+@@ -5018,13 +5151,13 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+             const Transfer::Rectangle& stencil_clear_rectangle =
+                 transfer_stencil_clear_rectangles[j];
+             stencil_clear_rect_write_ptr->rect.offset.x =
+-                int32_t(stencil_clear_rectangle.x_pixels * draw_resolution_scale_x());
++                int32_t(stencil_clear_rectangle.x_pixels * GetKeyScaleX(dest_rt_key));
+             stencil_clear_rect_write_ptr->rect.offset.y =
+-                int32_t(stencil_clear_rectangle.y_pixels * draw_resolution_scale_y());
++                int32_t(stencil_clear_rectangle.y_pixels * GetKeyScaleY(dest_rt_key));
+             stencil_clear_rect_write_ptr->rect.extent.width =
+-                stencil_clear_rectangle.width_pixels * draw_resolution_scale_x();
++                stencil_clear_rectangle.width_pixels * GetKeyScaleX(dest_rt_key);
+             stencil_clear_rect_write_ptr->rect.extent.height =
+-                stencil_clear_rectangle.height_pixels * draw_resolution_scale_y();
++                stencil_clear_rectangle.height_pixels * GetKeyScaleY(dest_rt_key);
+             stencil_clear_rect_write_ptr->baseArrayLayer = 0;
+             stencil_clear_rect_write_ptr->layerCount = 1;
+             ++stencil_clear_rect_write_ptr;
+@@ -5046,8 +5179,9 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+       transfer_viewport.minDepth = 0.0f;
+       transfer_viewport.maxDepth = 1.0f;
+       command_processor_.SetViewport(transfer_viewport);
+-      float pixels_to_ndc_x = (2.0f / transfer_viewport.width) * float(draw_resolution_scale_x());
+-      float pixels_to_ndc_y = (2.0f / transfer_viewport.height) * float(draw_resolution_scale_y());
++      // The rectangles are in guest pixels - scale to the destination's host pixels.
++      float pixels_to_ndc_x = (2.0f / transfer_viewport.width) * float(GetKeyScaleX(dest_rt_key));
++      float pixels_to_ndc_y = (2.0f / transfer_viewport.height) * float(GetKeyScaleY(dest_rt_key));
+       VkRect2D transfer_scissor;
+       transfer_scissor.offset.x = 0;
+       transfer_scissor.offset.y = 0;
+@@ -5860,15 +5994,19 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+   // Windows, as of June 2022.
+   spv::Id global_invocation_id = builder.createLoad(input_global_invocation_id, spv::NoPrecision);
+   spv::Id rectangle_sample_x = builder.createCompositeExtract(global_invocation_id, type_uint, 0);
++  // Dumps for fully native resolves (patch 0010) address the EDRAM buffer with the plain
++  // 1x tile layout.
++  uint32_t layout_scale_x = key.native_layout ? 1 : draw_resolution_scale_x();
++  uint32_t layout_scale_y = key.native_layout ? 1 : draw_resolution_scale_y();
+   uint32_t tile_width =
+-      (xenos::kEdramTileWidthSamples >> uint32_t(format_is_64bpp)) * draw_resolution_scale_x();
++      (xenos::kEdramTileWidthSamples >> uint32_t(format_is_64bpp)) * layout_scale_x;
+   spv::Id const_tile_width = builder.makeUintConstant(tile_width);
+   spv::Id rectangle_tile_index_x =
+       builder.createBinOp(spv::OpUDiv, type_uint, rectangle_sample_x, const_tile_width);
+   spv::Id tile_sample_x =
+       builder.createBinOp(spv::OpUMod, type_uint, rectangle_sample_x, const_tile_width);
+   spv::Id rectangle_sample_y = builder.createCompositeExtract(global_invocation_id, type_uint, 1);
+-  uint32_t tile_height = xenos::kEdramTileHeightSamples * draw_resolution_scale_y();
++  uint32_t tile_height = xenos::kEdramTileHeightSamples * layout_scale_y;
+   spv::Id const_tile_height = builder.makeUintConstant(tile_height);
+   spv::Id rectangle_tile_index_y =
+       builder.createBinOp(spv::OpUDiv, type_uint, rectangle_sample_y, const_tile_height);
+@@ -5990,6 +6128,16 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+     }
+   }
+ 
++  if (key.source_scale_native && !key.native_layout && IsDrawResolutionScaled()) {
++    // patch 0010: a native source dumped to the scaled EDRAM layout - duplicate each guest
++    // pixel into all the scaled sample slots covering it (after the sample index is
++    // extracted, since MSAA is not affected by the scale).
++    source_pixel_x = builder.createBinOp(spv::OpUDiv, type_uint, source_pixel_x,
++                                         builder.makeUintConstant(draw_resolution_scale_x()));
++    source_pixel_y = builder.createBinOp(spv::OpUDiv, type_uint, source_pixel_y,
++                                         builder.makeUintConstant(draw_resolution_scale_y()));
++  }
++
+   spv::Id packed[2] = {};
+   load_and_pack(source_pixel_x, source_pixel_y, source_sample_id, packed);
+ 
+@@ -6094,8 +6242,9 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+     // are both scaled, so the tile geometry and everything the destination position is
+     // compared or combined with is in host pixels. The scale is a compile-time constant, so
+     // the extra maths drops out at 1x.
+-    const uint32_t scale_x = draw_resolution_scale_x();
+-    const uint32_t scale_y = draw_resolution_scale_y();
++    // patch 0010: a fully native resolve writes shared memory at 1x.
++    const uint32_t scale_x = key.native_layout ? 1 : draw_resolution_scale_x();
++    const uint32_t scale_y = key.native_layout ? 1 : draw_resolution_scale_y();
+     const bool dest_scaled = scale_x > 1 || scale_y > 1;
+     uint32_t tile_width = (xenos::kEdramTileWidthSamples >> uint32_t(format_is_64bpp)) * scale_x;
+     uint32_t tile_height = xenos::kEdramTileHeightSamples * scale_y;
+@@ -6585,7 +6734,7 @@ VkPipeline VulkanRenderTargetCache::GetDirectResolvePipeline(DirectResolvePipeli
+ bool VulkanRenderTargetCache::TryResolveCopyDirectly(
+     const draw_util::ResolveInfo& resolve_info, draw_util::ResolveCopyShaderIndex copy_shader,
+     bool draw_resolution_scaled, const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
+-    VulkanSharedMemory& shared_memory, VulkanTextureCache& texture_cache) {
++    VulkanSharedMemory& shared_memory, VulkanTextureCache& texture_cache, bool copy_native) {
+   // beatles patch 0007, after xenia-edge (has207/xenia-edge aa2efeaf, e1ba7952): read the
+   // host render targets straight into shared memory, skipping the dump to the EDRAM buffer
+   // and the copy back out of it. Nothing is recorded unless everything is in place.
+@@ -6635,6 +6784,11 @@ bool VulkanRenderTargetCache::TryResolveCopyDirectly(
+         uint32_t(rt_key.Is64bpp()) != edram_info.format_is_64bpp) {
+       return false;
+     }
++    // patch 0010: the direct shader reads sources at the destination's scale - a native
++    // source feeding a scaled destination takes the EDRAM round trip, which duplicates it.
++    if (bool(rt_key.scale_native) != copy_native && IsDrawResolutionScaled()) {
++      return false;
++    }
+     if (rectangle.rows == 1) {
+       owned_tiles += rectangle.row_last_end - rectangle.row_first_start;
+     } else if (rectangle.rows > 1) {
+@@ -6656,6 +6810,8 @@ bool VulkanRenderTargetCache::TryResolveCopyDirectly(
+     pipeline_key.resource_format = rt_key.resource_format;
+     pipeline_key.is_depth = rt_key.is_depth;
+     pipeline_key.direct_resolve = 1;
++    pipeline_key.source_scale_native = rt_key.scale_native;
++    pipeline_key.native_layout = uint32_t(copy_native);
+     if (GetDumpPipeline(pipeline_key) == VK_NULL_HANDLE) {
+       return false;
+     }
+@@ -6807,10 +6963,10 @@ bool VulkanRenderTargetCache::TryResolveCopyDirectly(
+     // Host pixels, scaled along with the render targets and the destination (patch 0009).
+     uint32_t tile_pixels_x = ((xenos::kEdramTileWidthSamples >> uint32_t(rt_key.Is64bpp())) >>
+                               uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k4X)) *
+-                             draw_resolution_scale_x();
++                             (copy_native ? 1 : draw_resolution_scale_x());
+     uint32_t tile_pixels_y = (xenos::kEdramTileHeightSamples >>
+                               uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k2X)) *
+-                             draw_resolution_scale_y();
++                             (copy_native ? 1 : draw_resolution_scale_y());
+     uint32_t pixels_per_thread = (kDirectResolvePixelsPerStore * 2) >> uint32_t(rt_key.Is64bpp());
+ 
+     DumpOffsets offsets;
+@@ -6848,7 +7004,8 @@ bool VulkanRenderTargetCache::TryResolveCopyDirectly(
+ }
+ 
+ bool VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
+-                                                uint32_t dump_rows, uint32_t dump_pitch) {
++                                                uint32_t dump_rows, uint32_t dump_pitch,
++                                                bool native_layout) {
+   assert_true(GetPath() == Path::kHostRenderTargets);
+ 
+   GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows, dump_pitch,
+@@ -6886,6 +7043,10 @@ bool VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dum
+     pipeline_key.msaa_samples = rt_key.msaa_samples;
+     pipeline_key.resource_format = rt_key.resource_format;
+     pipeline_key.is_depth = rt_key.is_depth;
++    // patch 0010: the native layout is only for resolves whose sources are all native.
++    assert_true(!native_layout || rt_key.scale_native);
++    pipeline_key.source_scale_native = rt_key.scale_native;
++    pipeline_key.native_layout = uint32_t(native_layout);
+     dump_invocations_.emplace_back(rectangle, pipeline_key);
+   }
+ 
+@@ -6967,13 +7128,15 @@ bool VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dum
+       GpuStatAdd(GpuStatSlot::kEdramDumps, 1);  // beatles patch 0006
+       const bool beatles_timed = GpuCategoryTimingEnabled();
+       if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kEdramDump, false);
++      // The native layout has a 1x footprint (patch 0010).
+       command_buffer.CmdVkDispatch(
+-          (draw_resolution_scale_x() *
++          ((native_layout ? 1 : draw_resolution_scale_x()) *
+                (xenos::kEdramTileWidthSamples >> uint32_t(rt_key.Is64bpp())) *
+                dispatch.width_tiles +
+            (kDumpSamplesPerGroupX - 1)) /
+               kDumpSamplesPerGroupX,
+-          (draw_resolution_scale_y() * xenos::kEdramTileHeightSamples * dispatch.height_tiles +
++          ((native_layout ? 1 : draw_resolution_scale_y()) * xenos::kEdramTileHeightSamples *
++               dispatch.height_tiles +
+            (kDumpSamplesPerGroupY - 1)) /
+               kDumpSamplesPerGroupY,
+           1);

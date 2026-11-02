@@ -12,7 +12,7 @@ The recompiled game is **playable end to end with a gamepad emulating a guitar**
 |---|---|
 | Disc extraction | ✅ `game/default.xex` (10.8 MB) + 4.4 GB of assets |
 | Recompilation (`rexglue codegen`) | ✅ ~52.9k functions in 130 C++ files (~140 MB), ~2 min, ~3 GB peak |
-| Build | ✅ ~51 MB binary, `-O1`, `-j2`, a few minutes; patched SDK runtime + Vulkan plugin via `scripts/build_sdk.sh` (patches 0001-0009) |
+| Build | ✅ ~51 MB binary, `-O1`, `-j2`, a few minutes; patched SDK runtime + Vulkan plugin via `scripts/build_sdk.sh` (patches 0001-0010) |
 | Boot, intro, menus | ✅ intro movie plays and can be skipped (A); menus navigate with a gamepad; the intro input race is worked around (KI-7) |
 | Party and song list | ✅ fixed `XNetRandom`/user GUIDs (KI-12) and the network receive loop (KI-11) |
 | Gameplay | ✅ full songs with a gamepad as guitar/bass/drums (`--instruments`, KI-9) |
@@ -30,7 +30,7 @@ The recompiled game is **playable end to end with a gamepad emulating a guitar**
 - Saves/XContent, DLC, achievements, Live.
 - 4 functions still PENDING in the analysis (KI-1).
 - `--full_rate_world` misses 60 fps (~54) on the Vega 6; the rest is mostly the game's own drawing.
-- Internal resolution 2x2 runs at ~28 fps and 2x1 at ~50 fps (KI-17, measured); 2x2 cannot reach 60 on the Vega 6.
+- Internal resolution 2x2 runs at ~28 fps and 2x1 at ~50 fps (KI-17); with patch 0010, 2x1 reaches 57.6 fps with a softer image (threshold 640) or 54 fps sharp (threshold 320).
 - PC Settings strings are English in every language; FSR/CAS need an SDK build with FidelityFX (not available).
 
 ## Useful numbers
@@ -38,4 +38,4 @@ The recompiled game is **playable end to end with a gamepad emulating a guitar**
 - Manifest: 52 `orphan_*`, 42 `codeptr_*` and 2 `thunk_*` entries in `[entrypoint.functions]`, plus 2 `[[entrypoint.midasm_hook]]`s (`ProcCounter::ProcCommands`, `DataArray::Execute` unknown-command path for `{pc_cfg ...}`). Generated code has 0 unresolved-branch sites; 4 functions still PENDING.
 - Title: ID `454108B1`, XEX version 0.0.0.1 (no title update applied), filetime 2009-06-15.
 - Environment: 8 GB RAM, clang 23, Ghidra 12.1.2, Java 27, Python 3.14.
-- SDK patches (`patches/rexglue-sdk/`): 0001-0002 presenter, 0003 GPU command counters + plugin dir, 0004 upload coalescing (off), 0005 busy-wait fix, 0006 per-frame GPU timing (`--gpu_frame_csv`), 0007 Vulkan direct host resolve (`--direct_host_resolve`, on), 0008 `swap_post_effect` (FXAA) switchable at runtime, 0009 direct resolve with resolution scaling (`--direct_host_resolve_scaled`, on).
+- SDK patches (`patches/rexglue-sdk/`): 0001-0002 presenter, 0003 GPU command counters + plugin dir, 0004 upload coalescing (off), 0005 busy-wait fix, 0006 per-frame GPU timing (`--gpu_frame_csv`), 0007 Vulkan direct host resolve (`--direct_host_resolve`, on), 0008 `swap_post_effect` (FXAA) switchable at runtime, 0009 direct resolve with resolution scaling (`--direct_host_resolve_scaled`, on), 0010 per-surface resolution scale (`--draw_resolution_scale_threshold`, off by default).

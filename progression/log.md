@@ -228,3 +228,17 @@
   destination addressing for that layout, plus edge's host-pixel tile geometry and half-pixel
   offset fill. Result: dumps 19.6 → 2.8, ~1 ms per frame (2x1: 48.3 → 50.4 fps), no glitches.
 
+## 2026-11-02 (night) — Per-surface resolution scale (patch 0010)
+
+- Ported xenia-edge 74db632 (`draw_resolution_scale_threshold`) to the SDK (Vulkan host render
+  targets): `scale_native` render target key bit, native/scaled transfer shaders, 1x resolve
+  copies into shared memory (separate unscaled pipelines), dump and direct resolve with native
+  sources, per-draw scale in viewport/scissor/point size/polygon offset and PsParamGen /
+  memexport (new shader modification bit, pipeline storage version 13), occlusion query
+  normalization per query.
+- 2x1: threshold 640 gives 57.6 fps (vs 49.7) but a softer image; threshold 320 keeps it sharp
+  at 54.1 fps. `--draw_surface_profile` showed why: ~135 draws per frame go to a 640 px 2xMSAA
+  surface without depth (2D/screen work), which threshold 640 renders at 1x (KI-17).
+- Note: on Vulkan, `RenderTargetCache::BeginFrame` is never called; per-frame hooks there do
+  nothing.
+

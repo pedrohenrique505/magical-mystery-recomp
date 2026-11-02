@@ -147,6 +147,23 @@
   shaders predate xenia-canary 0f23f0568, so xenia-edge's group-packed scaled direct resolve,
   2d0f197, could not be ported as is). EDRAM dumps 19.6 → 2.8 per frame, about −1 ms of GPU per
   frame; no glitches (user, 2x2 and 2x1).
-- **Next levers:** per-surface scale (xenia-edge 74db632, `draw_resolution_scale_threshold`:
-  surfaces with small pitches, e.g. downscaled post-process chains and shadow maps, stay at
-  1x), which would cut texture loads, resolves and transfers at scale.
+- **Patch 0010 (`--draw_resolution_scale_threshold=N`, default 0 = off):** per-surface scale
+  after xenia-edge 74db632 (surfaces whose tile-aligned pitch is ≤ N pixels render at 1x;
+  native/scaled transfers, 1x resolves into shared memory, per-draw viewport/scissor/point
+  size/polygon offset/PsParamGen, occlusion counts normalized per query). Ported to the SDK's
+  Vulkan host-render-target path only. `--draw_surface_profile` logs draws per surface every
+  10 s. Results in "Sgt. Pepper" at 2x1 (perf-log windows of 2 s):
+
+  | 2x1 | mean fps | windows < 55 fps | GPU ms/frame (p90) | sharpness (user) |
+  |---|---|---|---|---|
+  | no threshold (patch 0009) | 49.7 | 71% | 17.4 (21.9) | sharp |
+  | threshold 640 | 57.6 | 13% | 12.8 (16.7) | softer |
+  | threshold 320 | 54.1 | 37% | 15.9 (18.7) | sharp |
+
+  2x2 with threshold 640: 28.8 → 48.3 fps. Surfaces per frame in gameplay: 1280 px 1x with
+  depth ~150 draws (the 3D scene), **640 px 2xMSAA without depth ~135 draws** (2D/screen work,
+  probably the note highway, HUD or crowd impostors), 640 px 4xMSAA ~33 (full-screen post
+  passes), 560 px 1x with depth 7-20 (shadow map or reflection), ≤320 px ~40 (bloom chain,
+  shadows). Threshold 640 makes the 640 px 2xMSAA surface native, which is both where most of
+  the gain comes from and why the image is softer; there is no threshold that keeps it sharp
+  and cheap.

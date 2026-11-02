@@ -2,44 +2,20 @@
 
 ## >>> START HERE: top priority for the next session <<<
 
-**Epic: stable 60 fps in gameplay — main cause fixed on 2026-11-02 (KI-14, fix 4).**
-`execute_unclipped_draw_vs_on_cpu=true` (default in `scripts/run.sh`) removed nearly all
-over-budget GPU frames in "Sgt. Pepper" (7.9% → 0.02%), no glitches. What is left:
-- **Confirm on other songs/venues** (Cavern, Shea Stadium, Abbey Road dreamscapes, the pre-song
-  venue fly-through) with `--gpu_frame_csv` + `scripts/analyze_gpu_frames.py`; look for frames
-  with `busy_ms` > 16.7 and check the `transfer profile:` log lines (`--gpu_frame_categories`).
-- **Headroom left per frame** (Sgt. Pepper, venue frames 13.1 ms): transfers 2.8 ms, dump +
-  resolve + texture reload ~2.5 ms, game draws/post ~7.5 ms. If another scene is over budget:
-  - xenia-edge (`has207/xenia-edge`) `aa2efeaf` "Resolve host render targets directly into
-    shared memory" would remove the EDRAM dump before each resolve (~1 ms/frame here); check
-    first what the SDK's existing `direct_host_resolve` cvar already covers.
-  - Remaining transfers are real data (skipping them breaks the image, KI-14); a finer
-    approach would need to know which EDRAM ranges the game overwrites before reading
-    (Ghidra on the engine's surface setup) — only if still needed.
-- `--full_rate_world` (venue every frame), re-measured after fix 4: 55.4 fps mean (was ~43),
-  user: "much more fluid", but 24% of frames exceed 16.7 ms of GPU (p90 18.9 ms); heavy frames
-  have 2.5x the resolve chain (55 resolves + EDRAM dumps, 31 MB texture reloads). Stays **off by
-  default**: it belongs in the future in-game "PC settings" section (user's plan). Candidate fix:
-  port xenia-edge's Vulkan direct resolve (`97ed99bb`, `aa2efeaf`, `e1ba7952`; the SDK's
-  `direct_host_resolve` exists only for D3D12).
-  Category run at full rate (timestamps add ~1.3 ms/frame, so compare proportions): over-budget
-  frames 18.9 ms = game draws/post 10.8 + transfers 3.3 + EDRAM dump 1.5 + resolve 1.4 +
-  texture reload 1.6 + uploads 0.3; real overshoot ~2 ms. Direct resolve removes the dump
-  (~1.5 ms; 38% of over-budget frames would fit even with the overhead) — worth porting but not
-  enough alone. The rest is game content (geometry + post at 4x MSAA): game-side quality options
-  (MSAA, blur/bloom passes; find them with Ghidra) for the PC settings section.
-- **Direct resolve ported and validated (patch 0007, 2026-11-02):** the SDK's
-  `direct_host_resolve` was a stub on Vulkan; it now reads host render targets straight into
-  shared memory for bitwise (fast) resolve copies whose source is fully owned by render
-  targets with the same layout (xenia-edge's rules). Intro: 2 of 5 resolves per frame go
-  direct, EDRAM dumps 5 → 3, GPU per frame 6.79 → 6.04 ms. "Sgt. Pepper" with
-  `--full_rate_world` (categories on): EDRAM dumps 39.6 → 3.8 per frame, GPU per frame
-  15.8 → 14.9 ms (p90 20.6 → 19.3), frames over budget 54% → 39%, guest 51.6 → 53.6 fps; no
-  glitches (user). The default half-rate mode was already at 60 and gains headroom (~0.7-1 ms
-  per frame: the post chain resolves every frame). `--direct_host_resolve=false` restores the
-  old path. Full rate still misses 60: what is left is game drawing (~8.8 ms), transfers
-  (2.8 ms) and texture reloads after resolves (1.3 ms) — next levers are game-side quality
-  options (Ghidra) for the PC settings section.
+**Epic "stable 60 fps in gameplay": done (2026-11-02, KI-14).** `execute_unclipped_draw_vs_on_cpu`
+(default in `scripts/run.sh`) removed nearly all over-budget GPU frames ("Sgt. Pepper": 7.9% →
+0.02%; the user confirmed other scenes), and the Vulkan direct resolve (patch 0007) added
+headroom. Candidates for the next session, pick with the user:
+- **Full-rate venue at 60** (`--full_rate_world`, now ~54 fps). Over-budget frames ~18.9 ms:
+  game draws/post ~8.8-10.8 ms, transfers ~3 ms, texture reloads after resolves ~1.3-1.6 ms.
+  The remaining levers are game-side quality options (MSAA level, blur/bloom/depth-of-field
+  passes): find where the engine sets them up with Ghidra and expose them through
+  `[[entrypoint.midasm_hook]]`s. Transfers are real data (skipping them corrupts the image).
+- **In-game "PC settings" section** (user's plan): a home for `--full_rate_world` and future
+  quality options; enhancements stay off by default.
+- **Real instruments** (section 5 below): USB guitar/drums/microphone.
+- If a new scene drops frames: `--gpu_frame_csv` + `--gpu_frame_categories`, then
+  `scripts/analyze_gpu_frames.py` and the `transfer profile:` log lines.
 
 **How to measure:** on AC power (check `/sys/class/power_supply/*/status`; on battery the iGPU
 runs at 400 MHz), `RUN_LOG=build/runX.log scripts/run.sh --perf_log=true
@@ -47,6 +23,7 @@ runs at 400 MHz), `RUN_LOG=build/runX.log scripts/run.sh --perf_log=true
 `scripts/analyze_gpu_frames.py build/frames.csv --from 5`. Gameplay runs need the user.
 
 ### Done on 2026-11-02 (see KI-14 and log.md)
+- Vulkan direct host resolve ported from xenia-edge (patch 0007), validated in gameplay.
 - Per-frame GPU timing and per-category/transfer profiling (patch 0006).
 - Render-target transfers identified as the main variable cost; `execute_unclipped_draw_vs_on_cpu`
   enabled.
@@ -69,7 +46,8 @@ Suggested order, from cheapest/most informative to most expensive.
 - [x] Gameplay showed ~30 distinct fps: the presenter dropped half the frames because the SDK's achievement toast forced UI-thread painting (KI-14).
 - [x] Gameplay frame pacing (KI-14): `--present_pacing` + FIFO, 0 dropped frames.
 - [x] GPU: FSI render-target path removes EDRAM transfer draws (KI-14).
-- [ ] **More GPU headroom (top priority, KI-14):** see "START HERE" at the top of this file.
+- [x] GPU headroom for 60 fps in gameplay (KI-14 fixes 4-5: `execute_unclipped_draw_vs_on_cpu`, Vulkan direct resolve).
+- [ ] Full-rate venue (`--full_rate_world`) at 60: see "START HERE".
 - [ ] Remove or gate the `--debug_probe` watch list once it is no longer needed (it only reads memory and is off by default).
 
 ## 2. Stability of the recompiled code

@@ -69,7 +69,7 @@
 - **Fix:** `scripts/run.sh` sets `SDL_AUDIO_DEVICE_SAMPLE_FRAMES=256`, so SDL pulls one guest frame at a time. Max gap between submits dropped to ~6 ms, stale frames to 0%, and the user confirmed perfect audio. If crackling comes back on another machine, `--audio_maxqframes 16` (SDK default 8) adds headroom.
 - **Tooling left in place:** `--show_fps`, `--perf_log` (fps + audio rate/pacing), `--audio_dump` + `scripts/analyze_audio_dump.py`, `--wait_profile` (`project/src/wait_profiler.cpp`), `scripts/profile.sh` (perf + GPU load).
 
-## KI-14 — Gameplay frame pacing and GPU load (much improved; GPU headroom still open)
+## KI-14 — Gameplay frame pacing and GPU load (fixed: steady 60 fps; full-rate venue still ~54 fps)
 - **Symptom (original):** the guest swapped at a steady 60 fps, but a 60 fps screen capture of gameplay had ~30 distinct frames per second, plus drops on camera cuts.
 - **Fix 1, presenter (2026-11-01):** the SDK always registers an ImGui `AchievementToastDialog`; any UI drawer makes the presenter paint from the UI thread, behind the game's GPU work, and half the frames were overwritten in the mailbox. `BeatlesApp::CreateAchievementNotificationDialog` returns `nullptr`. `--show_fps` and F3/F4 bring the UI-thread painting back while open; measure with `--perf_log` only.
 - **Not a guest problem:** `--hitch_log_ms` (`project/src/hitch_tracer.cpp`) showed that during a song the guest swaps at a clean 60 fps; the main thread (which calls `VdSwap` in gameplay) is CPU-busy, never blocked, during the few stalls (song loading). What the user saw were host-side drops.

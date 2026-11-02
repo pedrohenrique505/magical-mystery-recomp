@@ -1,10 +1,10 @@
 # Current status
 
-_Last updated: 2026-11-02 (late night)_
+_Last updated: 2026-11-02 (end of session)_
 
 ## Summary
 
-The recompiled game **boots, plays the intro, navigates menus, creates a party, lists songs and plays a full song** with a gamepad emulating a guitar. Gameplay audio is clean (KI-13). Frame pacing is locked to vsync (KI-14). With `execute_unclipped_draw_vs_on_cpu` (upstream Xenia's default, now set by `scripts/run.sh`) host render-target transfers stopped copying the whole EDRAM: in "Sgt. Pepper" no frame exceeds the 16.7 ms GPU budget any more (was 7.9%), including the sunflower/crowd shots; only isolated loading hitches remain. The 3D venue is drawn at half rate by design (`emulate_fps` 30; `--full_rate_world` forces full rate but is GPU-bound at ~43 fps). An SDK busy-wait was fixed (patch 0005: −43% CPU, −4 W).
+The recompiled game is **playable end to end with a gamepad emulating a guitar** (or bass/drums, `--instruments`): intro, menus, party creation, song list and full songs, with clean audio (KI-13). Gameplay holds a **steady 60 fps** on the Vega 6 iGPU (Ryzen 5 4600H): frame pacing is locked to vsync (KI-14), and the camera-cut drops are gone since `execute_unclipped_draw_vs_on_cpu` stopped render-target transfers from copying the whole EDRAM (frames over the 16.7 ms GPU budget 7.9% → 0.02% in "Sgt. Pepper"; other scenes confirmed by the user). The Vulkan direct resolve (patch 0007) skips the EDRAM dump for ~90% of resolves. The 3D venue is drawn at 30 fps by the engine's design; `--full_rate_world` draws it every frame at ~54 fps (off by default; meant for a future in-game PC settings section).
 
 ## Working
 
@@ -12,21 +12,23 @@ The recompiled game **boots, plays the intro, navigates menus, creates a party, 
 |---|---|
 | Disc extraction | ✅ `game/default.xex` (10.8 MB) + 4.4 GB of assets |
 | Recompilation (`rexglue codegen`) | ✅ ~52.9k functions in 130 C++ files (~140 MB), ~2 min, ~3 GB peak |
-| Build | ✅ ~51 MB binary, `-O1`, `-j2`, a few minutes |
-| Runtime boot | ✅ memory arena, function table, SDL input |
-| GPU | ✅ `xenos` plugin on Vulkan (AMD RADV Renoir); 1920×1080 swapchain; shaders and pipelines created |
-| Audio | ✅ endpoint initializes (6 channels, 48 kHz) |
-| Intro movie | ✅ visible on screen; the random freeze/crash during it was an input race in the SDK, worked around in the host app (KI-7). 120 s runs no longer stall; visual confirmation pending |
-| Tooling | ✅ PyGhidra in `.venv`; scripts to find missing functions |
+| Build | ✅ ~51 MB binary, `-O1`, `-j2`, a few minutes; patched SDK runtime + Vulkan plugin via `scripts/build_sdk.sh` (patches 0001-0007) |
+| Boot, intro, menus | ✅ intro movie plays and can be skipped (A); menus navigate with a gamepad; the intro input race is worked around (KI-7) |
+| Party and song list | ✅ fixed `XNetRandom`/user GUIDs (KI-12) and the network receive loop (KI-11) |
+| Gameplay | ✅ full songs with a gamepad as guitar/bass/drums (`--instruments`, KI-9) |
+| Audio | ✅ clean in gameplay (KI-13), 6 channels at 48 kHz |
+| GPU / frame rate | ✅ Vulkan (`xenos` plugin, RADV), steady 60 fps in gameplay, 0 dropped frames (KI-14) |
+| Tooling | ✅ PyGhidra in `.venv`, missing-function scripts, per-frame GPU logs (`--gpu_frame_csv`), perf/RGP/RenderDoc capture scripts |
 
-## Not validated / pending
+## Not done / pending
 
-- Menus: ✅ navigable. Party creation and the song list work (KI-12); full songs play with `--instruments guitar` (default). Gameplay: 0 dropped frames, ~59 fps mean, 6.5% of 2 s windows below 55 fps (KI-14); the pre-song venue fly-through still runs at ~49 fps. GPU headroom is the open item.
-- 4 functions still PENDING in the analysis — see [`known-issues.md`](known-issues.md) KI-1.
-- Input: a gamepad works (A skips the intro, menus navigate); the keyboard does nothing. A gamepad counts as a vocalist unless `--instruments` is used (KI-9); playing a song not yet confirmed.
-- Title update device (`update:\`) missing.
-- USB instruments (guitar, drums, microphone) — nothing implemented or tested.
+- Real USB instruments (guitar, drums, microphone for vocals): nothing implemented or tested.
+- Keyboard input: does nothing (only a real gamepad reaches the game).
+- Title update device (`update:\`) missing (KI-2).
 - Saves/XContent, DLC, achievements, Live.
+- 4 functions still PENDING in the analysis (KI-1).
+- `--full_rate_world` misses 60 fps (~54) on the Vega 6; the rest is mostly the game's own drawing.
+- Planned: an in-game "PC settings" section for enhancements such as `--full_rate_world`.
 
 ## Useful numbers
 

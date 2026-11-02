@@ -4,7 +4,7 @@ Static recompilation of *The Beatles: Rock Band* (Xbox 360) into native Linux C+
 
 > **Bring your own disc.** This repository contains **no game code or assets**. You need your own legitimate copy of the game, dumped from a disc you own. Nothing from the game is distributed here, and `game/`, `*.iso` and `*.xex` are git-ignored.
 
-> **Status:** the game boots, opens a window, brings up Vulkan and audio, and runs without aborting. Gameplay is not yet validated and USB instruments are not implemented. See [`progression/`](progression/) for details.
+> **Status:** the game is playable from start to finish with a gamepad: intro, menus, party creation, song list and full songs with clean audio, at a steady 60 fps on a Ryzen 5 4600H with its Vega 6 iGPU. Real USB instruments (guitar, drums, microphone), saves and DLC are not implemented yet. See [`progression/`](progression/) for details.
 
 ## Legal
 
@@ -49,11 +49,18 @@ cmake -S project -B build/beatles -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH=$PWD/tools/rexglue/linux-amd64
 nice -n 10 ninja -C build/beatles -j2
 
-# 5. Run
+# 5. Recommended: rebuild the SDK runtime and Vulkan GPU plugin with this project's patches
+#    (patches/rexglue-sdk/: presentation and busy-wait fixes, Vulkan direct resolve, profiling).
+#    ~15 min at -j2 the first time; scripts/run.sh picks up build/sdk-lib automatically.
+scripts/build_sdk.sh            # scripts/build_sdk.sh --remove goes back to the prebuilt SDK
+
+# 6. Run
 scripts/run.sh
 ```
 
-The run log is written to `build/run.log`.
+The run log is written to `build/run.log` (`RUN_LOG=path` picks another file).
+
+`scripts/run.sh` sets the defaults this game needs, as `REX_<CVAR>` environment variables (anything on the command line still wins): vsync with frame pacing locked to the display (`--present_pacing`), host render targets (`fbo`), and `--execute_unclipped_draw_vs_on_cpu` (upstream Xenia's default; without it the camera cuts drop frames). Measure on AC power: on battery the iGPU is capped.
 
 ### Performance and debugging options
 
@@ -61,6 +68,8 @@ The run log is written to `build/run.log`.
 scripts/run.sh --show_fps true      # guest frame rate in the top-left corner (F3: SDK debug overlay); overlays cost frames, see KI-14
 scripts/run.sh --perf_log true      # every 2 s: guest fps, audio pacing, host frames painted/dropped
 scripts/run.sh --gpu_frame_csv=build/frames.csv   # per-frame GPU time; scripts/analyze_gpu_frames.py summarises it
+scripts/run.sh --gpu_frame_csv=build/frames.csv --gpu_frame_categories true   # plus GPU ms per kind of work and a transfer profile
+scripts/run.sh --full_rate_world true   # draw the 3D venue every frame instead of the engine's 30 fps (~54 fps on a Vega 6)
 scripts/run.sh --wait_profile true  # every 2 s: per-thread time spent in kernel waits and file reads
 scripts/run.sh --audio_dump build/audio.raw   # raw audio frames; see scripts/analyze_audio_dump.py
 scripts/profile.sh                  # perf record + host GPU load, writes build/perf.data
@@ -87,7 +96,8 @@ drums use A/B/Y/X for the pads and LB for the kick.
 | Path | Contents |
 |---|---|
 | `project/` | ReXGlue project: manifest (`beatles_manifest.toml`), `CMakeLists.txt`, host app (`src/`). `generated/` is codegen output and is git-ignored. |
-| `scripts/` | Disc extraction, run and profiling scripts, audio dump analysis, and PyGhidra tools that find functions the static analysis missed (`find_orphans.py`, `size_of.py`, `resolve_orphans.py`). |
+| `scripts/` | Disc extraction, run and profiling scripts (`run.sh`, `profile.sh`, `rgp_capture.sh`), the patched SDK build (`build_sdk.sh`), analysis of audio dumps, GPU frame logs and screen captures, and PyGhidra tools that find functions the static analysis missed (`find_orphans.py`, `size_of.py`, `resolve_orphans.py`). |
+| `patches/rexglue-sdk/` | Patches to the ReXGlue SDK runtime and Vulkan plugin, applied in order by `scripts/build_sdk.sh`. |
 | `tools/` | Prebuilt ReXGlue SDK and the Ghidra XEX loader zip (git-ignored, see Setup). |
 | `third_party/` | Reference repositories, not built (git-ignored, see Setup). |
 | `game/` | Your extracted game (git-ignored). |
@@ -96,4 +106,4 @@ drums use A/B/Y/X for the pads and LB for the kick.
 
 ## Credits
 
-[ReXGlue](https://github.com/rexglue/rexglue-sdk), [Xenia](https://github.com/xenia-project/xenia), [XenonRecomp](https://github.com/hedge-dev/XenonRecomp), [XenosRecomp](https://github.com/hedge-dev/XenosRecomp), [XEXLoaderWV](https://github.com/zeroKilo/XEXLoaderWV) (and the SaveEditors fork), [rb3](https://github.com/DarkRTA/rb3), Ghidra and GhidraMCP.
+[ReXGlue](https://github.com/rexglue/rexglue-sdk), [Xenia](https://github.com/xenia-project/xenia), [xenia-edge](https://github.com/has207/xenia-edge) (Vulkan direct resolve), [XenonRecomp](https://github.com/hedge-dev/XenonRecomp), [XenosRecomp](https://github.com/hedge-dev/XenosRecomp), [XEXLoaderWV](https://github.com/zeroKilo/XEXLoaderWV) (and the SaveEditors fork), [rb3](https://github.com/DarkRTA/rb3), Ghidra and GhidraMCP.

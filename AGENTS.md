@@ -48,7 +48,7 @@ game/default.xex ──rexglue codegen──▶ project/generated/default/*.cpp 
                                                                                 (kernel/XAM, Vulkan GPU, SDL audio/input)
 ```
 
-- `tools/rexglue/linux-amd64/` is the downloaded SDK release (binary `rexglue`, `lib/`, `include/`). The full SDK source in `third_party/rexglue-sdk/` is mainly reference; the one exception is `librexruntime.so`, which `scripts/build_sdk.sh` rebuilds with `patches/rexglue-sdk/*.patch` into `build/sdk-lib/` (preferred by `scripts/run.sh` when present; `--remove` reverts). Keep SDK changes as patches there, since `third_party/` is git-ignored. Read it to learn manifest options and runtime behavior (e.g. `src/codegen/config.cpp`, `src/codegen/phase_*.cpp`, `src/ui/rex_app.cpp`).
+- `tools/rexglue/linux-amd64/` is the downloaded SDK release (binary `rexglue`, `lib/`, `include/`). The full SDK source in `third_party/rexglue-sdk/` is mainly reference; the exceptions are `librexruntime.so` and the xenos GPU plugin `librexgpu-xenos.so` (the Vulkan backend lives in the plugin), which `scripts/build_sdk.sh` rebuilds with `patches/rexglue-sdk/*.patch` into `build/sdk-lib/` (preferred by `scripts/run.sh` when present, the plugin through `REXGLUE_GPU_PLUGIN_DIR`; `--remove` reverts). Keep SDK changes as patches there, since `third_party/` is git-ignored. Read it to learn manifest options and runtime behavior (e.g. `src/codegen/config.cpp`, `src/codegen/phase_*.cpp`, `src/ui/rex_app.cpp`).
 - `project/generated/rexglue.cmake` is generated boilerplate ("DO NOT EDIT"); customize via `project/CMakeLists.txt` (`rexglue_setup_target(beatles GPU_PLUGINS xenos)`) and `project/src/beatles_app.h` (virtual hooks on `rex::ReXApp`).
 - `third_party/XenonRecomp`, `XenosRecomp`, `rb3`, `XEXLoaderWV` are references/tools only. `rb3` (Rock Band 3 Wii decomp) helps identify Harmonix engine structures and strings.
 - Guest ↔ host: recompiled code runs against a big-endian guest memory arena (virtual base `0x100000000`); kernel imports (`xboxkrnl`, XAM, `Vd*`) are implemented by the SDK runtime. Missing/stubbed imports show up in `build/run.log` as `STUB` or `unimplemented` warnings.
@@ -59,6 +59,8 @@ game/default.xex ──rexglue codegen──▶ project/generated/default/*.cpp 
 2. Function entries: `0xADDR = { name = "...", size = N }`. `size` and `end` are mutually exclusive; omit both to let the analyzer decide. Overlapping config ranges abort manifest loading.
 3. `codegen` must pass validation completely: any `b`/`bl` to an address not inside a known function is a hard error (`UnresolvedCall`), even a single one.
 4. **Why functions go missing:** the SDK's `VTableScanner` finds vtables only via MSVC RTTI. This game (Harmonix engine, STLport) has many classes without RTTI, so vtable-only targets (mostly small `this`-adjustor thunks) are never discovered. Symptom at runtime: `[FATAL] Call to invalid or unregistered function at guest address 0x...`.
+
+5. **Patching guest code:** `[[entrypoint.midasm_hook]]` (`address`, `name`, `registers = ["r3"]`, `return_on_true`/`jump_address`...) makes codegen call a host function (`bool name(PPCRegister& r3)`) at that instruction; define it in `project/src/` (example: `world_rate_hooks.cpp`). Hooks get registers only; for guest memory use `GuestBaseOrNull()` from `debug_probe.cpp`.
 
 ## Fixing missing functions (the recurring loop)
 

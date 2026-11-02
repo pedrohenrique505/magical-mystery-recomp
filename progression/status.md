@@ -1,10 +1,10 @@
 # Current status
 
-_Last updated: 2026-11-02 (afternoon)_
+_Last updated: 2026-11-02 (night)_
 
 ## Summary
 
-The recompiled game **boots, plays the intro, navigates menus, creates a party, lists songs and plays a full song** with a gamepad emulating a guitar. Gameplay audio is clean (KI-13). Frame pacing is fixed (KI-14): every guest frame is shown exactly once, locked to the display vsync, and the FSI render-target path cut GPU load; songs average ~59 fps, but two heavy scenes (venue fly-through, sunflower field with the crowd) drop to ~37-40 fps. With host render targets (the default again) songs average ~58 fps; the remaining "40-45 fps feel" is the game drawing the 3D venue at half rate (KI-14).
+The recompiled game **boots, plays the intro, navigates menus, creates a party, lists songs and plays a full song** with a gamepad emulating a guitar. Gameplay audio is clean (KI-13). Frame pacing is locked to vsync (KI-14) and songs average ~58-59 fps on host render targets, GPU-bound on the Vega 6 iGPU; the remaining drops are isolated ~35 ms frames, most visible on camera cuts. The 3D venue is drawn at half rate by design (`emulate_fps` 30; `--full_rate_world` forces full rate but is GPU-bound at ~43 fps). An SDK busy-wait was fixed (patch 0005: −43% CPU, −4 W).
 
 ## Working
 
@@ -30,6 +30,7 @@ The recompiled game **boots, plays the intro, navigates menus, creates a party, 
 
 ## Useful numbers
 
-- Manifest: 52 `orphan_*`, 42 `codeptr_*` and 2 `thunk_*` entries in `[entrypoint.functions]`. Generated code has 0 unresolved-branch sites; 4 functions still PENDING.
+- Manifest: 52 `orphan_*`, 42 `codeptr_*` and 2 `thunk_*` entries in `[entrypoint.functions]`, plus 1 `[[entrypoint.midasm_hook]]` (`ProcCounter::ProcCommands`). Generated code has 0 unresolved-branch sites; 4 functions still PENDING.
 - Title: ID `454108B1`, XEX version 0.0.0.1 (no title update applied), filetime 2009-06-15.
 - Environment: 8 GB RAM, clang 23, Ghidra 12.1.2, Java 27, Python 3.14.
+- SDK patches (`patches/rexglue-sdk/`): 0001-0002 presenter, 0003 GPU command counters + plugin dir, 0004 upload coalescing (off), 0005 busy-wait fix.

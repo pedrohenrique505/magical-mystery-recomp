@@ -2,54 +2,56 @@
 
 ## >>> START HERE: top priority for the next session <<<
 
-**Goal: make gameplay feel smooth.** State on 2026-11-02 (KI-14): with host render targets
-(default) the guest swaps at ~58 fps, but the game redraws the 3D venue only every other frame
-(highway every frame), so the screen shows 30-45 distinct frames/s. In a short stretch the
-venue drops to every third frame (capture `build/capI.mp4` 1:07-1:10: 26-30 distinct/s,
-repeat runs of 2; user: "looks like 20-25 fps"). The user chose to do both items below.
+**Epic: stable 60 fps in gameplay.** State on 2026-11-02 (KI-14): songs average ~58-59 fps,
+GPU-bound (Vega 6 iGPU at its 1500 MHz top clock). Drops are now rarer but still visible, and
+the user sees the biggest ones **on camera cuts** (e.g. "Sgt. Pepper", the bandstand shot with
+the crowd and sunflower field behind the band). What is already known about them:
+- They are isolated ~34-36 ms frames (a frame that missed the 16.7 ms budget and one vsync),
+  typically 2-6 per 2 s window, i.e. the GPU frame time sits close to 16.7 ms and heavier views
+  push it over.
+- Not CPU: the GPU command thread uses ~19% of a slow frame; the main thread waits in `VdSwap`.
+- Not pipeline compilation: no pipeline is created during gameplay (all at load time).
+- Slow windows coincide with more texture uploads (~25 per frame) — possibly texture
+  loading/conversion on camera cuts (new LODs/streamed textures), worth confirming.
+- Not barriers/uploads: coalescing cut barriers by 60% with no gain (patch 0004).
+- The venue is drawn at half rate on purpose (`emulate_fps` 30); `--full_rate_world` exists
+  but is GPU-bound at ~43 fps.
 
-### Step 1 (done 2026-11-02): venue half-rate rendering — found, `--full_rate_world`; see KI-14. Full rate is GPU-bound on this iGPU (43 fps). Open: an adaptive mode, or GPU savings (step 2) first
-- Hypothesis: the engine skips the world/venue draw on alternate frames (RB2/RB3 "Deluxe"
-  mods advertise "60 fps venues", so the stock engine runs venues below 60). Confirm before
-  patching: it could also be a guest-side frame budget that skips the venue when a frame runs
-  late (the 1:07-1:10 stretch with every-third-frame venue hints at an adaptive skip).
-- Where to look: RB2 symbol dump `third_party/rb3/doc/rb2_dump/` (class/method names; search
-  for the world/venue draw, `TheWorld`, `WorldDir`, `RndDir::DrawShowing`, `Rnd::` frame
-  logic, anything with "skip", "every", "rate", "frame" in the world/char/venue classes), the
-  RB3 decomp in `third_party/rb3/src`, and Ghidra (MCP needs the GUI open; PyGhidra
-  headless otherwise). Compare with the gwarb3dx (RB3 Deluxe) project for how it unlocks
-  venue frame rate: https://github.com/gwarb/gwarb3dx
-- Runtime check: `--debug_probe` (`project/src/debug_probe.cpp`) can watch a candidate flag or
-  frame counter; the heavy/light alternation is visible in `scripts/rgp_capture.sh` traces
-  (queue-event GPU times) and in a screen capture.
-- Patch from the host app (a guest memory write after boot, like the other hooks), behind a
-  cvar so it can be A/B tested. Then measure: guest fps (`--perf_log`) and distinct frames
-  (`scripts/count_distinct_frames.py`). Expect the GPU to become the limit (fbo averaged ~80%
-  busy at 58 fps with the half-rate venue).
+### Step 1: catch a camera-cut frame and see what is different
+- Add per-frame (not per-2 s) logging around slow frames: extend `--hitch_log_ms`
+  (`project/src/hitch_tracer.cpp`) to print the GPU command counters of the slow frame and of
+  the frames before it (needs a per-frame snapshot of `rex_gpu_take_command_stats`, patch 0003;
+  add counters for texture-cache work: textures loaded/converted, resolves, render-target
+  transfers — `render_target_cache.cpp` transfer draws, `texture_cache` loads).
+- Capture an RGP trace exactly on a camera cut: `scripts/rgp_capture.sh` with a trigger on a
+  single slow frame (`--rgp_slow_frames` currently needs 10 of 30 slow; add a
+  "single frame > N ms" mode in `project/src/gpu_capture.cpp`). Note an RGP trace is of the
+  *next* frame; with a cut the following frames are usually still heavy.
+- Compare that frame with a normal one: render-target transfer time (~18% of a normal frame,
+  `vkCmdDraw(6,1,0,0)`), texture uploads/compute conversion (`vkCmdDispatch`), post passes.
 
-### Step 2: profile the remaining dips on the fbo path (in progress 2026-11-02: counters + RGP done, upload coalescing ruled out; see KI-14. Open: render-target transfers ~18% of GPU time, CPU ruled out: the dips are GPU-bound; patch 0005 fixed an SDK busy-wait, −43% CPU)
-- `scripts/rgp_capture.sh 3` while playing the start of "Sgt. Pepper" (the earlier traces were
-  all FSI). Open with RGP 1.14.1 (`build/tools/rgp-1.14.1/x/RadeonDeveloperToolSuite-2023-02-15-1051/RadeonGPUProfiler`);
-  useful views: Events → Event timing with "Group by pass" + collapsed tree + zoom to fit
-  (per-pass durations), Wavefront occupancy (empty stretches = serialization), Overview → Most
-  expensive events sorted by Duration. The user drives the GUI and saves screenshots; RGP has
-  no text export.
-- Known candidate from the FSI traces: small draws serialized by shared-memory uploads
-  (barrier → `vkCmdCopyBuffer` → barrier before each draw; `VulkanSharedMemory::UploadRanges`
-  and `VulkanCommandProcessor::IssueDraw` in `third_party/rexglue-sdk/src/graphics/vulkan/`).
-  Fixes go into `patches/rexglue-sdk/` and are built with `scripts/build_sdk.sh`.
-- Also check the host-render-target transfer draws again on fbo (they were 55% of a slow frame
-  in an older RenderDoc capture, before FIFO pacing and other fixes).
+### Step 2: cut the GPU work that is avoidable
+- Render-target transfers of the host-render-target path (~2.9 ms of a 15.6 ms frame): find
+  which EDRAM ranges/formats force them (log in `VulkanRenderTargetCache` which source/dest
+  formats and sizes are transferred per frame) and whether a cheaper path exists (e.g. skip
+  depth transfers that are cleared right after, `--depth_transfer_not_equal_test`, keeping
+  formats compatible). Patches go in `patches/rexglue-sdk/`, built by `scripts/build_sdk.sh`
+  (it now rebuilds the xenos plugin too).
+- Texture uploads on camera cuts: if confirmed, look at pre-warming/caching in the texture
+  cache, or spreading uploads over frames.
+- Resolution scale is a last-resort lever (the game renders 1280x720; post passes are full
+  screen).
 
 **How to measure** (every change, on AC power, same song; gameplay runs need the user):
-- Guest fps / GPU: `RUN_LOG=build/runX.log scripts/run.sh --perf_log=true --hitch_log_ms=35`
-  (summarize the `perf:` lines per 2 s window: shown fps, GPU busy).
-- What the screen shows: `gpu-screen-recorder -w eDP-1 -f 60 -fm cfr -k h264 -q ultra -cursor no -s 960x540 -o build/capX.mp4`
-  in a second terminal, then `scripts/count_distinct_frames.py build/capX.mp4` in the
-  background. A "longest repeat run" of 1 means the venue updates every other frame, 2 every
-  third. To see *what* changes, compute the per-region difference map (done ad hoc on
-  2026-11-02; worth adding to the script).
-- No `--show_fps`/F3/F4 while measuring. The intro is not a valid benchmark.
+`RUN_LOG=build/runX.log scripts/run.sh --perf_log=true --hitch_log_ms=35`; summarize per 2 s
+window (fps, windows < 55, GPU busy, `gpu cmds`). Screen captures and
+`scripts/count_distinct_frames.py` for what the user sees. No overlays while measuring.
+
+### Done on 2026-11-02 (see KI-14 and log.md)
+- Venue half rate explained (`emulate_fps`), `--full_rate_world` added (off by default).
+- GPU command counters in `--perf_log` (patch 0003), RGP traces on the fbo path.
+- Shared-memory upload coalescing tried (patch 0004, off by default): no gain.
+- CPU profile: dips are GPU-bound; SDK busy-wait fixed (patch 0005, −43% CPU, −4 W).
 
 ---
 

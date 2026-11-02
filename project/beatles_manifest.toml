@@ -16,110 +16,11 @@ includes = []
 0x82648980 = { name = "thunk_82648980", size = 24 }
 
 # Vtable/data targets and thunk chains with no registered function (scripts/find_orphans.py + scripts/size_of.py via PyGhidra)
-0x82317900 = { name = "orphan_82317900" }
-0x823179A0 = { name = "orphan_823179A0" }
-0x82317B34 = { name = "orphan_82317B34", size = 32 }
-0x82317B90 = { name = "orphan_82317B90" }
-0x82317C2C = { name = "orphan_82317C2C" }
-0x8232DAE8 = { name = "orphan_8232DAE8" }
-0x8232DB8C = { name = "orphan_8232DB8C", size = 8 }
-0x8232DBC0 = { name = "orphan_8232DBC0", size = 8 }
-0x8232DBFC = { name = "orphan_8232DBFC" }
-0x8232DC7C = { name = "orphan_8232DC7C" }
-0x8232DCF4 = { name = "orphan_8232DCF4" }
-0x8232DD54 = { name = "orphan_8232DD54" }
-0x8232DDEC = { name = "orphan_8232DDEC" }
-0x8232DE48 = { name = "orphan_8232DE48" }
-0x8232DEE4 = { name = "orphan_8232DEE4" }
-0x8232DF7C = { name = "orphan_8232DF7C" }
-0x8232DFD8 = { name = "orphan_8232DFD8" }
-0x8232E03C = { name = "orphan_8232E03C", size = 20 }
-0x8232E060 = { name = "orphan_8232E060" }
-0x8232E0CC = { name = "orphan_8232E0CC" }
-0x8232E144 = { name = "orphan_8232E144" }
-0x8232E1A4 = { name = "orphan_8232E1A4" }
-0x8232E23C = { name = "orphan_8232E23C" }
-0x8232E298 = { name = "orphan_8232E298" }
-0x8232E328 = { name = "orphan_8232E328" }
-0x8232E3A8 = { name = "orphan_8232E3A8" }
-0x8232E434 = { name = "orphan_8232E434" }
-0x8232E4CC = { name = "orphan_8232E4CC" }
-0x8232E528 = { name = "orphan_8232E528" }
-0x8232E5C4 = { name = "orphan_8232E5C4" }
-0x8232E65C = { name = "orphan_8232E65C" }
-0x8232E6B8 = { name = "orphan_8232E6B8" }
-0x8232E74C = { name = "orphan_8232E74C", size = 8 }
-0x8232E7E4 = { name = "orphan_8232E7E4" }
-0x8232E894 = { name = "orphan_8232E894" }
-0x8232E914 = { name = "orphan_8232E914" }
-0x8232E9D4 = { name = "orphan_8232E9D4" }
-0x8232EA64 = { name = "orphan_8232EA64" }
-0x8232EB18 = { name = "orphan_8232EB18" }
-0x8232EB88 = { name = "orphan_8232EB88" }
-0x8232ECC0 = { name = "orphan_8232ECC0" }
-0x8232EE24 = { name = "orphan_8232EE24" }
-0x8232EEBC = { name = "orphan_8232EEBC" }
-0x8232EF3C = { name = "orphan_8232EF3C" }
-0x8232EFFC = { name = "orphan_8232EFFC" }
-0x8232F0B8 = { name = "orphan_8232F0B8" }
-0x8232F138 = { name = "orphan_8232F138" }
-0x8232F1A4 = { name = "orphan_8232F1A4" }
-0x8232F278 = { name = "orphan_8232F278" }
-0x8232F3AC = { name = "orphan_8232F3AC" }
-0x8232F4FC = { name = "orphan_8232F4FC" }
-0x8232F574 = { name = "orphan_8232F574" }
-0x8232F5CC = { name = "orphan_8232F5CC" }
-0x8232F644 = { name = "orphan_8232F644" }
-0x8232F6A0 = { name = "orphan_8232F6A0" }
-0x8232F718 = { name = "orphan_8232F718", size = 20 }
-0x8232F758 = { name = "orphan_8232F758" }
-0x8232F7D8 = { name = "orphan_8232F7D8" }
-0x8232F858 = { name = "orphan_8232F858" }
-0x8232F930 = { name = "orphan_8232F930" }
-0x8232F9C8 = { name = "orphan_8232F9C8" }
-0x8232FA24 = { name = "orphan_8232FA24" }
-0x8232FAB4 = { name = "orphan_8232FAB4" }
-0x8232FB34 = { name = "orphan_8232FB34" }
-0x8232FBB4 = { name = "orphan_8232FBB4" }
-0x8232FC74 = { name = "orphan_8232FC74" }
-0x8232FDA0 = { name = "orphan_8232FDA0" }
-0x8232FE3C = { name = "orphan_8232FE3C" }
-0x8232FEE0 = { name = "orphan_8232FEE0" }
-0x8232FFC8 = { name = "orphan_8232FFC8" }
-0x823301C4 = { name = "orphan_823301C4" }
-0x82330248 = { name = "orphan_82330248" }
-0x82330328 = { name = "orphan_82330328" }
-0x823303C0 = { name = "orphan_823303C0" }
-0x8233041C = { name = "orphan_8233041C" }
-0x823304AC = { name = "orphan_823304AC" }
-0x8233052C = { name = "orphan_8233052C" }
-0x823305AC = { name = "orphan_823305AC" }
-0x8233062C = { name = "orphan_8233062C" }
-0x823306AC = { name = "orphan_823306AC" }
-0x8233072C = { name = "orphan_8233072C" }
-0x823307AC = { name = "orphan_823307AC" }
-0x8233082C = { name = "orphan_8233082C" }
-0x823308AC = { name = "orphan_823308AC" }
-0x82330930 = { name = "orphan_82330930" }
-0x8233396C = { name = "orphan_8233396C" }
-0x82333D58 = { name = "orphan_82333D58", size = 28 }
-0x82334104 = { name = "orphan_82334104", size = 28 }
-0x8233412C = { name = "orphan_8233412C", size = 8 }
-0x823343D8 = { name = "orphan_823343D8" }
-0x823345C4 = { name = "orphan_823345C4", size = 20 }
 0x8239DB40 = { name = "orphan_8239DB40" }
-0x823A6010 = { name = "orphan_823A6010" }
-0x823A6080 = { name = "orphan_823A6080", size = 8 }
-0x823A608C = { name = "orphan_823A608C", size = 32 }
-0x823A60C8 = { name = "orphan_823A60C8", size = 8 }
-0x823A60D4 = { name = "orphan_823A60D4", size = 16 }
-0x82592254 = { name = "orphan_82592254", size = 8 }
 0x826253C4 = { name = "orphan_826253C4" }
-0x8262B768 = { name = "orphan_8262B768", size = 28 }
 0x8262B8E0 = { name = "orphan_8262B8E0", size = 24 }
 0x8262BC4C = { name = "orphan_8262BC4C", size = 12 }
 0x8262BD8C = { name = "orphan_8262BD8C", size = 12 }
-0x8262C44C = { name = "orphan_8262C44C", size = 32 }
 0x8262FE6C = { name = "orphan_8262FE6C" }
 0x8263AA48 = { name = "orphan_8263AA48" }
 0x8263C1EC = { name = "orphan_8263C1EC" }
@@ -137,7 +38,6 @@ includes = []
 0x82650688 = { name = "orphan_82650688", size = 8 }
 0x82652C08 = { name = "orphan_82652C08" }
 0x82652C50 = { name = "orphan_82652C50", size = 28 }
-0x826BE214 = { name = "orphan_826BE214" }
 0x826D5980 = { name = "orphan_826D5980", size = 16 }
 0x826D5AE0 = { name = "orphan_826D5AE0" }
 0x826D5B08 = { name = "orphan_826D5B08" }
@@ -149,11 +49,9 @@ includes = []
 0x827588CC = { name = "orphan_827588CC" }
 0x82759310 = { name = "orphan_82759310" }
 0x82759470 = { name = "orphan_82759470" }
-0x82776004 = { name = "orphan_82776004", size = 8 }
 0x8282F268 = { name = "orphan_8282F268" }
 0x8286B9E0 = { name = "orphan_8286B9E0" }
 0x828807E8 = { name = "orphan_828807E8", size = 24 }
-0x8288F0D8 = { name = "orphan_8288F0D8" }
 0x828D25C8 = { name = "orphan_828D25C8", size = 32 }
 0x828D2BAC = { name = "orphan_828D2BAC", size = 32 }
 0x828D4440 = { name = "orphan_828D4440", size = 4 }
@@ -166,8 +64,50 @@ includes = []
 0x8293D420 = { name = "orphan_8293D420", size = 4 }
 0x82945BB8 = { name = "orphan_82945BB8", size = 4 }
 0x82946248 = { name = "orphan_82946248", size = 20 }
-0x823A615C = { name = "orphan_823A615C", size = 8 }
 0x825922B8 = { name = "orphan_825922B8", size = 8 }
 0x8262BC5C = { name = "orphan_8262BC5C", size = 8 }
-0x8262C4FC = { name = "orphan_8262C4FC", size = 12 }
-0x82776028 = { name = "orphan_82776028", size = 32 }
+
+# Function pointers materialized in code (lis/addi), e.g. qsort comparators and callbacks.
+# Found by scripts/find_code_ptr_orphans.py; declared without size so the analyzer sizes them.
+0x826D5FA8 = { name = "codeptr_826D5FA8" }
+0x826D5FB8 = { name = "codeptr_826D5FB8" }
+0x826D5FC8 = { name = "codeptr_826D5FC8" }
+0x826D5FD8 = { name = "codeptr_826D5FD8" }
+0x826D5FE8 = { name = "codeptr_826D5FE8" }
+0x826D5FF8 = { name = "codeptr_826D5FF8" }
+0x826D6008 = { name = "codeptr_826D6008" }
+0x826D6018 = { name = "codeptr_826D6018" }
+0x826D6028 = { name = "codeptr_826D6028" }
+0x826D6038 = { name = "codeptr_826D6038" }
+0x82749E70 = { name = "codeptr_82749E70" }
+0x82749E80 = { name = "codeptr_82749E80" }
+0x8276F510 = { name = "codeptr_8276F510" }
+0x827A4F78 = { name = "codeptr_827A4F78" }
+0x828936A8 = { name = "codeptr_828936A8" }
+0x828CA2BC = { name = "codeptr_828CA2BC" }
+0x828CA6A8 = { name = "codeptr_828CA6A8" }
+0x828D43E8 = { name = "codeptr_828D43E8" }
+0x828D46FC = { name = "codeptr_828D46FC" }
+0x828D4A6C = { name = "codeptr_828D4A6C" }
+0x828D4FB0 = { name = "codeptr_828D4FB0" }
+0x828EF6BC = { name = "codeptr_828EF6BC" }
+0x82922F00 = { name = "codeptr_82922F00" }
+0x829251C8 = { name = "codeptr_829251C8" }
+0x82925318 = { name = "codeptr_82925318" }
+0x8292B3D0 = { name = "codeptr_8292B3D0" }
+0x8292B520 = { name = "codeptr_8292B520" }
+0x8293102C = { name = "codeptr_8293102C" }
+0x8293D3C8 = { name = "codeptr_8293D3C8" }
+0x8293D63C = { name = "codeptr_8293D63C" }
+0x8293DABC = { name = "codeptr_8293DABC" }
+0x8293E008 = { name = "codeptr_8293E008" }
+0x82945B60 = { name = "codeptr_82945B60" }
+0x82955600 = { name = "codeptr_82955600" }
+0x82955728 = { name = "codeptr_82955728" }
+0x8295F218 = { name = "codeptr_8295F218" }
+0x82972104 = { name = "codeptr_82972104" }
+0x82973238 = { name = "codeptr_82973238" }
+0x82975D58 = { name = "codeptr_82975D58" }
+0x82975EB0 = { name = "codeptr_82975EB0" }
+0x82990F98 = { name = "codeptr_82990F98" }
+0x829C9298 = { name = "codeptr_829C9298" }

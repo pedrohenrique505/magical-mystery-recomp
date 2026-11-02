@@ -65,7 +65,11 @@ game/default.xex ──rexglue codegen──▶ project/generated/default/*.cpp 
 - One-off: read the instructions at the address in Ghidra (see below), find where the function ends (first `blr`/`bctr`/unconditional `b` for thunks), add it to `[entrypoint.functions]` with `size`, rerun codegen + ninja.
 - Bulk: `scripts/find_orphans.py` lists data words pointing into code that no function covers (input list of registered addresses comes from `project/generated/default/beatles_init.cpp`: `grep -hoE "\{ 0x[0-9A-F]{8}, "`). `scripts/resolve_orphans.py <workdir>` automates "codegen → parse `target not in any function` errors → size via Ghidra → append to manifest" until codegen passes. Both need `.venv` (PyGhidra) and run against a **copy** of the Ghidra project in `<workdir>/ghproj`.
 - Computed `size` stops at the first terminator, so it is only trustworthy for thunks (≤32 bytes); larger orphans are declared without `size`. Candidates that fall inside another candidate's `[addr, addr+size)` are interior labels, not functions — drop them.
-- **Do not trust Ghidra's function bodies as ground truth for what rexglue covers.** Ghidra functions have non-contiguous chunks (e.g. `Function_823A5FB0` = `[823a5fb0-823a600f] + [823a615c-823a6163]`) that rexglue treats as unowned. The rexglue validator is the oracle.
+- **Not every "target not in any function" is a function.** The analyzer's view of a function ends early in two cases, and declaring the stranded code as a function splits the parent (codegen still passes, but the generated code gets `REX_FATAL("Unresolved branch ...")` on internal paths that fire at runtime):
+  - **Switch case bodies.** MSVC jump tables (`lhzx`/`lbzx`/`lwzx` + `add` + `mtctr` + `bctr`). `scripts/find_switch_labels.py` decodes all of them; drop any candidate that falls between a `bctr` and its last case label.
+  - **SEH blocks.** `__try/__except` resume code sits after an unconditional `b`, bracketed by `mr r8,r8` markers, and is referenced from scope-table data (so `find_orphans.py` sees it). The runtime never dispatches into it; do not declare it.
+- **Validation is not enough.** After every codegen, check the output: `grep -h 'REX_FATAL("Unresolved' project/generated/default/beatles_recomp.*.cpp | wc -l` must be 0. `Analyze: N functions still PENDING` (debug log via `--log-level debug --log-file <path>`; add `-f` to force a rerun) is the other health metric.
+- Function pointers built in code (`lis`/`addi`, e.g. qsort comparators) are invisible to `find_orphans.py`; `scripts/find_code_ptr_orphans.py` lists them (it already skips jump-table bases).
 
 ## Ghidra / PyGhidra
 
@@ -77,3 +81,7 @@ game/default.xex ──rexglue codegen──▶ project/generated/default/*.cpp 
 ## Debugging a run
 
 `build/run.log` is the SDK log (`--log_file`), appended per run, so truncate it (`: > build/run.log`) before a test run. Useful filters: `grep -v "Loader Message\|Creating graphics pipeline"` removes Vulkan noise. Crashes produce a core dump (`coredumpctl list`). `timeout 60 scripts/run.sh` is the usual smoke test; exit 124 means it ran until the timeout (no crash), 134 means abort (look for `[FATAL]`).
+
+The host app overrides some SDK imports by defining `__imp__<Name>` in the executable and forwarding with `dlsym(RTLD_NEXT)` (`project/src/xam_input_hooks.cpp`, `net_hooks.cpp`); that is the way to fix or extend SDK behavior without rebuilding the SDK. A `SIGBUS` anywhere (game or compositor) means a full `/dev/shm`: check `df -h /dev/shm` for leaked `xenia_memory_*` objects (KI-10).
+
+To watch guest state at runtime, extend `project/src/debug_probe.cpp` (`--debug_probe true`): a host thread that reads guest memory every 2 s and logs it. It never calls guest code. Known guest addresses are listed in `progression/known-issues.md` (KI-12). The RB2 symbol dump in `third_party/rb3/doc/rb2_dump/` matches this engine closely and gives class/method names for what you find. Running PyGhidra headless rewrites Ghidra's `LastOpenedProject` preference; if the GUI opens an empty project, reopen `beatles-rock-band.gpr` from the repo root.

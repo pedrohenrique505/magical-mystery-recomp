@@ -6,6 +6,11 @@
 
 #include <rex/rex_app.h>
 
+// xam_input_hooks.cpp: parses --instruments and logs the result.
+void LogInstrumentConfig();
+// shm_cleanup.cpp: unlinks the guest memory shm object so it cannot leak.
+void UnlinkGuestMemoryShm();
+
 class BeatlesApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -21,7 +26,10 @@ class BeatlesApp : public rex::ReXApp {
   // void OnPreSetup(rex::RuntimeConfig& config) override {}
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
-  // void OnPostSetup() override {}
+  void OnPostSetup() override {
+    UnlinkGuestMemoryShm();
+    LogInstrumentConfig();
+  }
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>

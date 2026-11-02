@@ -13,6 +13,10 @@ include(generated/rexglue.cmake)
 # Sources
 set(BEATLES_SOURCES
     src/main.cpp
+    src/xam_input_hooks.cpp
+    src/net_hooks.cpp
+    src/shm_cleanup.cpp
+    src/debug_probe.cpp
 )
 
 if(WIN32)

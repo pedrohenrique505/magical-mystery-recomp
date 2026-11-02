@@ -55,6 +55,22 @@ scripts/run.sh
 
 The run log is written to `build/run.log`.
 
+### Controllers and instruments
+
+Only a real gamepad reaches the game for now (the keyboard does nothing). The game decides
+what a controller is from its XInput subtype, and a plain gamepad only counts as a vocalist
+(it then asks for a microphone), so by default every pad is presented as a guitar. To pick
+another instrument per player:
+
+```bash
+scripts/run.sh --instruments drums           # every pad is a drum kit
+scripts/run.sh --instruments "guitar,drums"  # player 1 guitar, player 2 drums
+```
+
+Values: `guitar` (default), `bass`, `drums`, `gamepad` (real subtype: vocalist, needs a mic). Rock Band layout:
+frets A/B/Y/X/LB (green/red/yellow/blue/orange), strum on D-pad up/down, overdrive on Back;
+drums use A/B/Y/X for the pads and LB for the kick.
+
 ## Layout
 
 | Path | Contents |

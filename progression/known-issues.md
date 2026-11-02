@@ -1,10 +1,8 @@
 # Known issues
 
-## KI-1 — 11 functions with unresolved jumps
-- **Symptom:** `codegen` logs `Analyze: 11 functions still PENDING with unresolved jumps` (debug level, non-blocking).
-- **Probable cause:** jump tables (`switch`) the analysis could not resolve.
-- **Risk:** code that executes those jumps may fail at runtime.
-- **How to investigate:** run `rexglue --log-level trace codegen ...`, find which functions stay `PENDING`, read the code in Ghidra and declare `[[switch_tables]]`. Manifest options are in `third_party/rexglue-sdk/src/codegen/config.cpp`.
+## KI-1 — Functions with unresolved jumps (mostly fixed)
+- **Was:** 66 functions PENDING and 115 `REX_FATAL("Unresolved branch ...")` sites in the generated code. Cause: 103 bogus manifest entries (see KI-8) that split switch statements and SEH-protected functions.
+- **Now:** 0 unresolved sites; 4 functions still PENDING (not identified yet; `--log-level debug` codegen log). If a new `Unresolved branch` FATAL shows up at runtime, look for a manifest entry inside that function first.
 
 ## KI-2 — `update:\gen\patch_xbox.hdr` not found
 - **Symptom:** `VFS: 'update:\gen' -> [no device]` and `NtCreateFile FAILED ... 0xc000000f` at the start of every run.
@@ -29,3 +27,37 @@
 ## KI-6 — XEXLoaderWV extension built for a different Ghidra version
 - **State:** the fork's zip targets Ghidra 12.0.4; it was installed on 12.1.2 with "Install Anyway" and works, but required enabling the **Jython** extension (the loader references `org.python.jline`).
 - **Plan B:** build from `third_party/XEXLoaderWV` with Gradle against the installed Ghidra.
+
+## KI-7 — Input race in the SDK's `InputSystem` (fixed in the host app)
+- **Symptom:** the intro froze at a random point (sooner when keys were pressed), or the process aborted with `free(): invalid pointer` inside `rex::input::InputSystem::RefreshDevices()`.
+- **Cause:** `InputSystem` (prebuilt SDK v0.10.0) has no lock, but every `GetState`/`GetCapabilities`/`SetState` runs `RefreshDevices()`, which rebuilds the shared `devices_` vectors. The game polls `XInputGetState` from its own thread (guest `sub_823E4D20`, every 4 ms, while holding its input critical section) and calls `XInputGetCapabilities`/`XInputSetState` from other threads. Heap corruption either crashed or left the polling thread spinning with the critical section held, blocking the main thread.
+- **Fix:** `project/src/xam_input_hooks.cpp` defines `__imp__XamInputGetState`, `__imp__XamInputGetCapabilities` and `__imp__XamInputSetState` in the executable (they take precedence over the `.so`), serializes them with one mutex and forwards to the SDK implementation via `dlsym(RTLD_NEXT)`. If the game starts calling other `XamInput*` imports that reach `InputSystem` (e.g. `GetKeystroke`), add them there too.
+- **Upstream:** worth reporting to ReXGlue; remove the workaround once the SDK locks `InputSystem`.
+
+## KI-8 — Bogus manifest entries split functions (fixed)
+- **Symptom:** `[FATAL] Unresolved branch from 0x8232E788 to 0x8232E7B8` after skipping the intro.
+- **Cause:** the earlier orphan loop declared code that is not a function: 98 switch case bodies (5 switches, e.g. `sub_8232DA28`, a 104-case `lhzx` table) and 5 `__try/__except` resume blocks. Each one cut its parent function short; codegen validation passed, but the parent's internal branches were emitted as `REX_FATAL`.
+- **Fix:** removed those 103 entries (manifest: 155 → 52 `orphan_*`). Tooling: `scripts/find_switch_labels.py`, plus the post-codegen check documented in `AGENTS.md`.
+
+## KI-9 — A gamepad only counts as a vocalist (workaround: `--instruments`)
+- **Symptom:** starting a song asks to "connect between one to three microphones".
+- **Cause:** the game classifies controllers by `XINPUT_CAPABILITIES.SubType` (guest `sub_823E5028`): 6 guitar, 11 bass, 8 drums, 7 and 9 other variants; anything else is a gamepad, which the game treats as a vocalist (the console headset plugs into the pad). The SDK reports every SDL pad as subtype 1.
+- **Workaround:** `--instruments` (defined in `project/src/xam_input_hooks.cpp`, default `guitar`) rewrites the subtype per player. The game only reads the subtype plus the wireless flag; no vendor check.
+- **Still open:** microphone/vocals (no capture implemented), keyboard input, drum velocity (the game reads it from the thumbsticks for subtype 8).
+
+## KI-10 — Guest memory shm objects leaked into /dev/shm (fixed)
+- **Symptom:** `SIGBUS` in the game at random points and, worse, the Hyprland compositor crashing with `SIGBUS` (twice on 2026-11-01, the second forced a reboot). `/dev/shm` was 80% full with 12 `xenia_memory_*` files (2.9 GB of RAM).
+- **Cause:** the SDK backs the guest arena with a POSIX shm object and only `shm_unlink`s it in the `Memory` destructor, which crashes, aborts, `timeout` kills and the normal "hard-exiting process" path all skip. A full RAM-backed tmpfs turns page faults on shm mappings into `SIGBUS` for every process using it.
+- **Fix:** `project/src/shm_cleanup.cpp` unlinks the object right after startup (`OnPostSetup`), so the kernel frees it when the process exits, however it exits. `scripts/run.sh` also removes leftovers not held by any process.
+
+## KI-11 — Network receive loop spun forever once a party was created (fixed, follow-up pending)
+- **Symptom:** after creating a party, the song list screen stayed empty, and the log grew by ~14 MB/s of `__imp__NetDll_WSAGetOverlappedResult STUB` (20 rotated 5 MB logs in 7 s, so the start of the run was lost).
+- **Cause:** the game's UDP layer (guest `sub_8293EAA8`/`sub_8293ED70`) issues overlapped `WSARecvFrom` and polls `WSAGetOverlappedResult`. In the SDK the first returns `SOCKET_ERROR` without `WSA_IO_PENDING` and the second is a bare stub that leaves r3 non-zero ("completed"), so the game spun on fake completions.
+- **Fix:** `project/src/net_hooks.cpp` models "no packet ever arrives": `WSARecvFrom` → `SOCKET_ERROR` + 997, `WSAGetOverlappedResult` → `FALSE` + 996.
+- **Note:** this was not the cause of the empty song list; that was KI-12.
+
+## KI-12 — Song list empty after creating a party: all users shared one GUID (fixed)
+- **Symptom:** after creating a party the song select screen showed only the background, forever.
+- **Diagnosis** (with `--debug_probe`, see `project/src/debug_probe.cpp`): `SongSyncPanel::IsLoaded` (guest `sub_822E64E0`) waited with `pending_users=3`. `SongSyncPanel::Load` (`sub_822E6D78`) queues every user returned by `BandUserMgr::GetUsers(8)` that is not local; the three pre-allocated *remote* `BandUser` objects passed the "in a band slot" filter (`sub_822609C0` → `BandUserMgr::FindSlot`, `sub_8225A550`, which matches 16-byte user GUIDs). Every GUID comes from `XNetRandom` (`sub_82517470`), and the SDK's `XNetRandom` fills the buffer with a constant `0xBB`, so all users had the same GUID and the remote ones matched the local player's slot. Their song lists never arrive, so the panel never synced.
+- **Fix:** `__imp__NetDll_XNetRandom` in `project/src/net_hooks.cpp` returns real random bytes (`getrandom`). Verified by the user: the song list appears and a song (Lucy in the Sky with Diamonds) plays to the end without crashing.
+- **Useful addresses** (title 454108B1, XEX 0.0.0.1): `SongSyncPanel::sInstance` `0x82A44F80` (`+72` sent, `+74` synced, `+76/+80` pending users), `TheContentMgr` ptr `0x829FEAB8` (`+40 == 1` ready), `TheBandUserMgr` ptr `0x82A42284` (remote users `+64/+68`, band slot GUIDs `+76`), net object ptr `0x82A47110` (players `+36/+40`, transport `+164`).

@@ -103,3 +103,4 @@
 - Heavy frame on FSI: one render pass (main scene) 17.4 ms of pixel-shader work; FSI loses early-Z, so overdraw is expensive. Host render targets (`fbo`): windows below 55 fps 42% → 15%, fly-through 37 → 60 fps. `fbo` is the default again.
 - User: "never really 60, feels like 40-45". Screen capture at 60 fps: 30-45 distinct frames/s. A per-region difference map showed alternating frames where only the note highway changes: the game renders the venue at half rate (very likely by design; RB2/RB3 Deluxe mods add "60 fps venues").
 - New: `scripts/count_distinct_frames.py` (distinct frames per second in a CFR capture).
+- User review of the capture: an apparent drop to 20-25 fps at 1:07-1:10 (venue every third frame there). Next session: force the venue to full rate (step 1) and profile the remaining dips on fbo (step 2); see `next-steps.md`.

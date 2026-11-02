@@ -2,27 +2,54 @@
 
 ## >>> START HERE: top priority for the next session <<<
 
-**Gameplay runs at ~58 fps with host render targets (now the default); the "40-45 fps feel"
-is the game's half-rate venue (KI-14).** A screen capture shows the 3D venue redrawn every
-other frame and only the note highway every frame, matching the heavy/light GPU frames seen in
-RGP. Decide with the user:
+**Goal: make gameplay feel smooth.** State on 2026-11-02 (KI-14): with host render targets
+(default) the guest swaps at ~58 fps, but the game redraws the 3D venue only every other frame
+(highway every frame), so the screen shows 30-45 distinct frames/s. In a short stretch the
+venue drops to every third frame (capture `build/capI.mp4` 1:07-1:10: 26-30 distinct/s,
+repeat runs of 2; user: "looks like 20-25 fps"). The user chose to do both items below.
 
-1. **Force the venue to full rate**, as the RB2/RB3 "Deluxe" mods do ("60 fps venues"): find
-   the engine switch (RB2 symbol dump `third_party/rb3/doc/rb2_dump/`, Ghidra; look at how
-   the world/venue draw is skipped on alternate frames) and patch it from the host app. GPU
-   cost roughly doubles for the venue: measure whether the Vega 6 can hold 60 (heavy frames
-   are the limit; on fbo the GPU averaged ~80% busy at 58 fps with half-rate venue).
-2. Remaining dips (40-46 fps in a short stretch on fbo): profile with `scripts/rgp_capture.sh`
-   on the fbo path; candidates are the per-draw shared-memory uploads (barrier +
-   `vkCmdCopyBuffer` before small draws, `VulkanSharedMemory::UploadRanges`).
+### Step 1: find and force the venue's half-rate rendering
+- Hypothesis: the engine skips the world/venue draw on alternate frames (RB2/RB3 "Deluxe"
+  mods advertise "60 fps venues", so the stock engine runs venues below 60). Confirm before
+  patching: it could also be a guest-side frame budget that skips the venue when a frame runs
+  late (the 1:07-1:10 stretch with every-third-frame venue hints at an adaptive skip).
+- Where to look: RB2 symbol dump `third_party/rb3/doc/rb2_dump/` (class/method names; search
+  for the world/venue draw, `TheWorld`, `WorldDir`, `RndDir::DrawShowing`, `Rnd::` frame
+  logic, anything with "skip", "every", "rate", "frame" in the world/char/venue classes), the
+  RB3 decomp in `third_party/rb3/src`, and Ghidra (MCP needs the GUI open; PyGhidra
+  headless otherwise). Compare with the gwarb3dx (RB3 Deluxe) project for how it unlocks
+  venue frame rate: https://github.com/gwarb/gwarb3dx
+- Runtime check: `--debug_probe` (`project/src/debug_probe.cpp`) can watch a candidate flag or
+  frame counter; the heavy/light alternation is visible in `scripts/rgp_capture.sh` traces
+  (queue-event GPU times) and in a screen capture.
+- Patch from the host app (a guest memory write after boot, like the other hooks), behind a
+  cvar so it can be A/B tested. Then measure: guest fps (`--perf_log`) and distinct frames
+  (`scripts/count_distinct_frames.py`). Expect the GPU to become the limit (fbo averaged ~80%
+  busy at 58 fps with the half-rate venue).
 
-**How to measure:** `RUN_LOG=build/runX.log scripts/run.sh --perf_log=true --hitch_log_ms=35`
-for guest fps / GPU; for what the screen really shows, record with
-`gpu-screen-recorder -w eDP-1 -f 60 -fm cfr -k h264 -q ultra -cursor no -s 960x540 -o build/capX.mp4`
-and run `scripts/count_distinct_frames.py build/capX.mp4` (in the background; the per-cell
-difference map in `progression/log.md` 2026-11-02 explains how highway-only frames were found).
-GPU profiles: `scripts/rgp_capture.sh N` (auto-captures sustained slow stretches,
-`touch build/rgp_trigger` for a manual one), open with RGP 1.14.1. Gameplay runs need the user.
+### Step 2: profile the remaining dips on the fbo path
+- `scripts/rgp_capture.sh 3` while playing the start of "Sgt. Pepper" (the earlier traces were
+  all FSI). Open with RGP 1.14.1 (`build/tools/rgp-1.14.1/x/RadeonDeveloperToolSuite-2023-02-15-1051/RadeonGPUProfiler`);
+  useful views: Events → Event timing with "Group by pass" + collapsed tree + zoom to fit
+  (per-pass durations), Wavefront occupancy (empty stretches = serialization), Overview → Most
+  expensive events sorted by Duration. The user drives the GUI and saves screenshots; RGP has
+  no text export.
+- Known candidate from the FSI traces: small draws serialized by shared-memory uploads
+  (barrier → `vkCmdCopyBuffer` → barrier before each draw; `VulkanSharedMemory::UploadRanges`
+  and `VulkanCommandProcessor::IssueDraw` in `third_party/rexglue-sdk/src/graphics/vulkan/`).
+  Fixes go into `patches/rexglue-sdk/` and are built with `scripts/build_sdk.sh`.
+- Also check the host-render-target transfer draws again on fbo (they were 55% of a slow frame
+  in an older RenderDoc capture, before FIFO pacing and other fixes).
+
+**How to measure** (every change, on AC power, same song; gameplay runs need the user):
+- Guest fps / GPU: `RUN_LOG=build/runX.log scripts/run.sh --perf_log=true --hitch_log_ms=35`
+  (summarize the `perf:` lines per 2 s window: shown fps, GPU busy).
+- What the screen shows: `gpu-screen-recorder -w eDP-1 -f 60 -fm cfr -k h264 -q ultra -cursor no -s 960x540 -o build/capX.mp4`
+  in a second terminal, then `scripts/count_distinct_frames.py build/capX.mp4` in the
+  background. A "longest repeat run" of 1 means the venue updates every other frame, 2 every
+  third. To see *what* changes, compute the per-region difference map (done ad hoc on
+  2026-11-02; worth adding to the script).
+- No `--show_fps`/F3/F4 while measuring. The intro is not a valid benchmark.
 
 ---
 

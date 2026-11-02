@@ -1,10 +1,10 @@
 # Current status
 
-_Last updated: 2026-11-01 (evening)_
+_Last updated: 2026-11-01 (night)_
 
 ## Summary
 
-The recompiled game **boots, plays the intro, navigates menus, creates a party, lists songs and plays a full song** with a gamepad emulating a guitar. The main open problem is **gameplay performance** (very low frame rate during songs).
+The recompiled game **boots, plays the intro, navigates menus, creates a party, lists songs and plays a full song** with a gamepad emulating a guitar. Gameplay audio is now clean (KI-13). The main open problem is **video frame pacing in gameplay**: the guest runs at 60 fps but only ~30 distinct frames per second reach the screen (KI-14).
 
 ## Working
 
@@ -21,7 +21,7 @@ The recompiled game **boots, plays the intro, navigates menus, creates a party, 
 
 ## Not validated / pending
 
-- Menus: ✅ navigable, stable frame rate (user report). Party creation and the song list work (KI-12); a full song was played with `--instruments guitar`. **Gameplay frame rate is very low** (menus are smooth).
+- Menus: ✅ navigable, stable frame rate (user report). Party creation and the song list work (KI-12); a full song was played with `--instruments guitar`. Audio is clean after KI-13; **gameplay shows ~30 distinct fps with small drops** (KI-14; menus are smooth).
 - 4 functions still PENDING in the analysis — see [`known-issues.md`](known-issues.md) KI-1.
 - Input: a gamepad works (A skips the intro, menus navigate); the keyboard does nothing. A gamepad counts as a vocalist unless `--instruments` is used (KI-9); playing a song not yet confirmed.
 - Title update device (`update:\`) missing.

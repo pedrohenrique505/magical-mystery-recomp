@@ -1,5 +1,41 @@
 # Next steps
 
+## >>> START HERE: top priority for the next session <<<
+
+**Gameplay video frame pacing (KI-14).** The guest swaps at a steady 60 fps and gameplay audio is
+now clean (KI-13), but a 60 fps screen capture of gameplay shows only **~30 distinct frames per
+second** plus small drops (menus: ~60). The host GPU (Radeon Renoir iGPU, already at its max
+1500 MHz) is ~90% busy in gameplay. Plan, in order:
+
+1. **Find where the GPU time goes.** Toggle SDK GPU options one at a time and measure each run
+   the same way (see "How to measure" below). Candidates: `--direct_host_resolve`,
+   `--readback_memexport false`, `--async_shader_compilation`, `--present_effect`,
+   `--resolution_scale`, `--texture_cache_memory_limit_*`, `--vsync false`. Read
+   `third_party/rexglue-sdk/src/graphics/vulkan/` (`command_processor.cpp` `IssueSwap`,
+   `render_target_cache.cpp`) and `src/ui/presenter.cpp` (guest output mailbox) to see how
+   frames are dropped when the GPU is late.
+2. **Profile the GPU side**, not only the CPU: `perf` (`scripts/profile.sh`) only shows CPU.
+   Consider RenderDoc (the SDK has `renderdoc_api.h`) or `RADV_DEBUG`/`radeontop` to see whether
+   resolves, EDRAM transfers, texture uploads or the presenter dominate.
+3. **Cheap CPU win, independent of the above:** the SDK audio worker burns ~80% of a core polling
+   in `PosixConditionBase::WaitMultiple` (1 ms alertable slices + trylock). Not the bottleneck,
+   but wasted CPU on a 6-core laptop.
+4. Later: `-O2` for the generated code (currently `-O1` because of the 8 GB RAM limit) only if
+   the guest CPU ever becomes the bottleneck; today the main thread spends ~75% of its time
+   waiting for the GPU.
+
+**How to measure** (every change, before and after):
+- `scripts/run.sh --show_fps true --perf_log true` — guest fps on screen and in `build/run.log`.
+- Distinct frames that actually reach the screen: record gameplay with
+  `gpu-screen-recorder -w eDP-1 -f 60 -fm cfr -k h264 -o build/capture.mp4`, then count unique
+  frames per second with `ffmpeg -i build/capture.mp4 -vf "scale=480:-1,mpdecimate=hi=64*4:lo=64*2:frac=0.1,showinfo" -an -f null -`
+  (group the `pts_time` values by second). Run heavy analyses in the background.
+- `scripts/profile.sh` — perf record + host GPU load (`build/gpu_busy.log`).
+- Getting to gameplay needs the user with a gamepad (intro skip, party, song); plan runs so each
+  one answers a specific question.
+
+---
+
 Suggested order, from cheapest/most informative to most expensive.
 
 ## 1. Validate what runs (immediate)
@@ -8,7 +44,8 @@ Suggested order, from cheapest/most informative to most expensive.
 - [ ] Record whether the intro has sound, whether it can be skipped, and what happens when it ends (title screen, black screen, crash). If it crashes, note the last `[FATAL]` line from `build/run.log`.
 
 - [x] Song list after creating a party (KI-12, `XNetRandom`). A full song plays.
-- [ ] **Gameplay performance (top priority):** frame rate is very low during songs while menus are smooth. Profile first (`perf record -g` on the running game; check whether the cost is guest code, the Xenos/Vulkan backend, XMA audio decoding or Bink), then consider `-O2` for the generated code (currently `-O1` because of RAM), GPU readback/resolve settings and the `Skipping Vulkan frame presentation` path.
+- [x] Gameplay audio crackling / slow-motion feel: SDL pulled 4 frames per callback, fixed with `SDL_AUDIO_DEVICE_SAMPLE_FRAMES=256` (KI-13).
+- [ ] **Gameplay video frame pacing (top priority, KI-14):** see "START HERE" at the top of this file.
 - [ ] Remove or gate the `--debug_probe` watch list once it is no longer needed (it only reads memory and is off by default).
 
 ## 2. Stability of the recompiled code

@@ -56,3 +56,11 @@
 - The Ghidra MCP (GUI with GhidraMCP) plus the RB2 symbol dump in `third_party/rb3/doc/rb2_dump` (`SongSyncPanel`, `NetGameMsgs`) made the reverse engineering fast; the RB2 engine matches this game closely.
 - User test: song list shows, "Lucy in the Sky with Diamonds" played to the end with no black screen or crash. **New main problem: gameplay frame rate is very low** (menus were fine).
 - Side note: running PyGhidra headless rewrites Ghidra's `LastOpenedProject`, so the GUI opened an empty scratch copy; reopen `beatles-rock-band.gpr` from the repo root if the program seems to be missing.
+
+## 2026-11-01 — Gameplay audio fixed; measurement tooling
+
+- Added measurement tools instead of judging by eye: `--show_fps` (ImGui overlay, also feeds the SDK's F3 overlay), `--perf_log` (guest fps from `VdSwap`, audio frames/s and submit pacing), `--wait_profile` (per-thread time in kernel waits/reads), `--audio_dump` + `scripts/analyze_audio_dump.py`, and `scripts/profile.sh` (perf record + GPU load sampling).
+- First perf profile: guest main thread spins ~75% in the D3D wait-for-GPU loop; host GPU ~90% busy; the SDK audio worker burns a core polling. The fps counter then showed the guest at a steady 60 fps while the user saw ~10-15, so the problem was not guest CPU speed.
+- User report: audio crackled and felt slowed down during songs. Ruled out one by one with data: audio submit rate (187.5/s, real-time), silence/starvation (none), clipping (none), pitch (normal spectrum), SDK output path (screen-capture audio matched the dump with zero drift), blocking waits and file reads (normal). The dump finally showed ~14% of frames were stale copies from two frames earlier: SDL pulled 4 frames per callback, so the game's XAudio callback ran in bursts its mixer could not follow (KI-13).
+- Fix: `SDL_AUDIO_DEVICE_SAMPLE_FRAMES=256` in `scripts/run.sh`. Stale frames 14% → 0%; user: "the audio is perfect".
+- A 60 fps screen capture shows only ~30 distinct frames per second in gameplay (60 in menus): next target (KI-14).

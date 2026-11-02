@@ -2,22 +2,29 @@
 
 ## >>> START HERE: top priority for the next session <<<
 
-**More GPU headroom (KI-14, last part).** Pacing is solved (`--present_pacing`, FIFO) and the
-FSI render-target path removed the EDRAM transfer draws; `scripts/run.sh` enables all three by
-default. Songs now average ~59 fps, but the iGPU is still ~85% busy at ~1.4 GHz and saturates on
-heavy camera shots and the pre-song venue fly-through (~49 fps), so frames occasionally miss
-vsync. Plan, in order:
+**Build the ReXGlue SDK from source to fix presentation under FIFO (KI-14).** Everything the
+host app can change has been tried (see KI-14 "Tested on 2026-11-02 without gain"). Songs run at
+~59 fps, but two scenes stay slow: the pre-song venue fly-through (pure GPU limit) and the
+sunflower field with the crowd (~40 fps). In the sunflower scene the GPU idles ~15% under FIFO
+because the SDK paints from the UI thread behind the game's GPU work; MAILBOX (GPU thread
+presents) reaches ~47-58 fps there but loses frame pacing. The functions that choose the paint
+mode are internal to `librexruntime`, so the fix needs a rebuilt SDK.
 
-1. **New RenderDoc capture on the FSI path** of a slow frame, to see the new cost split (the
-   user drives the qrenderdoc GUI: Performance Counter Viewer, export CSV; see KI-15 for how to
-   capture). Before FSI: 55% transfer rectangles, 23% scene, 15% compute.
-2. **Force the GPU clock**: `echo high | sudo tee /sys/class/drm/card1/device/power_dpm_force_performance_level`
-   (back with `auto`). The average sclk in songs is ~1.4 GHz out of 1.5; DPM ramps late on
-   sudden heavy frames.
-3. **CPU power waste** shares the APU power budget (PPT ~35-40 W in songs): the SDK audio worker
-   polls `WaitMultiple` at ~80% of a core; the guest main thread spins in the D3D wait loop.
-4. Cheap flags still untested in gameplay on FSI: `--no-readback_memexport`,
-   `--no-gamma_render_target_as_unorm16` (no effect on the intro on the old path).
+1. **Build the SDK** (`third_party/rexglue-sdk`) with the same toolchain flags, `-j2`, `nice`,
+   check peak RAM first (8 GB machine). Point `CMAKE_PREFIX_PATH` at the new install and confirm
+   the game still runs identically before changing anything.
+2. **Presenter change:** let the guest output (GPU command) thread present even with a FIFO
+   swapchain (`Presenter::GetDesiredPaintModeFromUIThread`, `src/ui/presenter.cpp`), so the
+   vsync wait happens in that thread and replaces `--present_pacing`; or keep MAILBOX and pace on
+   real display timing with `VK_KHR_present_wait` (check RADV/Wayland support). Measure the
+   sunflower scene: target is GPU ~99% busy with no dropped frames.
+3. **Then GPU cost:** with a debug-marker build, look at the small draws that take 0.7-1.5 ms on
+   the FSI path (shadow-map passes) for barriers/stalls in the Vulkan command processor.
+4. Smaller items: the SDK audio worker polls `WaitMultiple` at ~80% of a core (shares the APU
+   power budget); the venue fly-through is GPU-bound at 99%.
+
+If building the SDK is not wanted, the alternative is accepting the current state (FIFO + pacing +
+FSI defaults; optionally MAILBOX for slightly higher fps in heavy scenes at the cost of pacing).
 
 **How to measure** (every change, on AC power, same song):
 - `scripts/run.sh --perf_log=true --hitch_log_ms=35`: per 2 s guest fps, swap histogram,

@@ -81,3 +81,9 @@
 - Cause B: the GPU (pixel shading + texture fetch bound). A RenderDoc capture showed 55% of GPU time in render-target transfer rectangles of the host-render-target EDRAM emulation. `--render_target_path_vulkan=fsi` removes them: song windows below 55 fps 16% → 6.5%. User: drops reduced, still not a locked 60.
 - FIFO, pacing and FSI are now defaults in `scripts/run.sh` (env vars, overridable on the command line).
 - KI-15: the SDK `dlopen`s `librenderdoc.so` to "detect" RenderDoc, which injects it into every run once installed (no window on Wayland). Fixed with `project/src/renderdoc_guard.cpp`. Lesson: headless RenderDoc replays of gameplay captures saturate the iGPU and freeze the desktop; the user drove the GUI instead.
+
+## 2026-11-02 (later) — Remaining slow scenes: what does not help, and why
+
+- Forced GPU clock (+1-2 fps), `--no-readback_memexport`, triple-buffered pacing (`--present_pacing_frames=2`, kept as an option) and guest `--vsync=false`: no measurable gain in the two slow scenes (venue fly-through, sunflower field).
+- RenderDoc on the FSI path: transfer rectangles 55% → 19% of GPU time; geometry now dominates, with many tiny draws (shadow-map passes) taking 0.7-1.5 ms each, i.e. stalls.
+- MAILBOX (GPU thread presents) pushes the sunflower scene from GPU 84% / ~40 fps to GPU 99% / ~47-58 fps: under FIFO the SDK paints from the UI thread, behind the game's GPU work. The deciding functions are internal to `librexruntime`, so the next step is building the SDK from source (see `next-steps.md`). User: improvement "almost imperceptible"; session ended here.

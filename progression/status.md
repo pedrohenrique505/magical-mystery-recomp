@@ -4,7 +4,7 @@ _Last updated: 2026-11-02_
 
 ## Summary
 
-The recompiled game **boots, plays the intro, navigates menus, creates a party, lists songs and plays a full song** with a gamepad emulating a guitar. Gameplay audio is clean (KI-13). Frame pacing is fixed (KI-14): every guest frame is shown exactly once, locked to the display vsync, and the FSI render-target path cut GPU load; songs average ~59 fps, with occasional dips on heavy camera shots because the iGPU is still ~85% busy.
+The recompiled game **boots, plays the intro, navigates menus, creates a party, lists songs and plays a full song** with a gamepad emulating a guitar. Gameplay audio is clean (KI-13). Frame pacing is fixed (KI-14): every guest frame is shown exactly once, locked to the display vsync, and the FSI render-target path cut GPU load; songs average ~59 fps, but two heavy scenes (venue fly-through, sunflower field with the crowd) drop to ~37-40 fps. The next fix needs a rebuilt SDK (presenter paints from the UI thread under FIFO; see `next-steps.md`).
 
 ## Working
 

@@ -16,8 +16,18 @@ over-budget GPU frames in "Sgt. Pepper" (7.9% → 0.02%), no glitches. What is l
   - Remaining transfers are real data (skipping them breaks the image, KI-14); a finer
     approach would need to know which EDRAM ranges the game overwrites before reading
     (Ghidra on the engine's surface setup) — only if still needed.
-- `--full_rate_world` (venue every frame) is worth re-measuring now that frames are cheaper:
-  it was GPU-bound at ~43 fps before fix 4.
+- `--full_rate_world` (venue every frame), re-measured after fix 4: 55.4 fps mean (was ~43),
+  user: "much more fluid", but 24% of frames exceed 16.7 ms of GPU (p90 18.9 ms); heavy frames
+  have 2.5x the resolve chain (55 resolves + EDRAM dumps, 31 MB texture reloads). Stays **off by
+  default**: it belongs in the future in-game "PC settings" section (user's plan). Candidate fix:
+  port xenia-edge's Vulkan direct resolve (`97ed99bb`, `aa2efeaf`, `e1ba7952`; the SDK's
+  `direct_host_resolve` exists only for D3D12).
+  Category run at full rate (timestamps add ~1.3 ms/frame, so compare proportions): over-budget
+  frames 18.9 ms = game draws/post 10.8 + transfers 3.3 + EDRAM dump 1.5 + resolve 1.4 +
+  texture reload 1.6 + uploads 0.3; real overshoot ~2 ms. Direct resolve removes the dump
+  (~1.5 ms; 38% of over-budget frames would fit even with the overhead) — worth porting but not
+  enough alone. The rest is game content (geometry + post at 4x MSAA): game-side quality options
+  (MSAA, blur/bloom passes; find them with Ghidra) for the PC settings section.
 
 **How to measure:** on AC power (check `/sys/class/power_supply/*/status`; on battery the iGPU
 runs at 400 MHz), `RUN_LOG=build/runX.log scripts/run.sh --perf_log=true

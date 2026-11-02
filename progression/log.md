@@ -150,3 +150,12 @@
   the EDRAM range of unclipped draws: frames over budget 7.9% → 0.02%, windows < 55 fps
   22% → 6.7% (loading only), no glitches. Now a `scripts/run.sh` default.
 - Ghidra was not needed: the cost was in the emulator's EDRAM bookkeeping, not in game content.
+
+## 2026-11-02 (late night, full-rate venue) — Re-measured after fix 4
+
+- User tested other scenes with fix 4: performance held. `--full_rate_world`: 55.4 fps mean
+  (was ~43), "much more fluid", still drops: 24% of frames over 16.7 ms of GPU (p90 18.9 ms).
+  Stays off by default; it goes into a future in-game "PC settings" section (user's plan).
+- Category run at full rate: game draws/post ~10.8 ms of an over-budget frame, transfers 3.3,
+  EDRAM dump 1.5, resolve 1.4, texture reload 1.6. Next: port xenia-edge's Vulkan direct
+  resolve (removes the dump), then game-side quality options via Ghidra.

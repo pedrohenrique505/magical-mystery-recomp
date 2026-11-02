@@ -1,0 +1,19 @@
+diff --git i/src/core/threading_posix.cpp w/src/core/threading_posix.cpp
+index 9ac8d15..5f56024 100644
+--- i/src/core/threading_posix.cpp
++++ w/src/core/threading_posix.cpp
+@@ -414,8 +414,12 @@ class PosixConditionBase {
+       if (timeout == std::chrono::milliseconds::max()) {
+         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+       } else {
+-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
+-        auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
++        // beatles patch 0005: microsecond precision. With milliseconds, any remaining time
++        // under 1 ms truncated to 0 and this loop spun until the deadline; alertable waits
++        // are sliced into 1 ms waits, so they busy-waited all the time.
++        auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(end_time - now);
++        auto sleep_time =
++            std::min(remaining, std::chrono::microseconds(std::chrono::milliseconds(1)));
+         std::this_thread::sleep_for(sleep_time);
+       }
+     }

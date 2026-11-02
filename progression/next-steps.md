@@ -27,7 +27,7 @@ repeat runs of 2; user: "looks like 20-25 fps"). The user chose to do both items
   (`scripts/count_distinct_frames.py`). Expect the GPU to become the limit (fbo averaged ~80%
   busy at 58 fps with the half-rate venue).
 
-### Step 2: profile the remaining dips on the fbo path (in progress 2026-11-02: counters + RGP done, upload coalescing ruled out; see KI-14. Open: render-target transfers ~18% of GPU time, and CPU time of the GPU command thread in the dips — `scripts/profile.sh`)
+### Step 2: profile the remaining dips on the fbo path (in progress 2026-11-02: counters + RGP done, upload coalescing ruled out; see KI-14. Open: render-target transfers ~18% of GPU time, CPU ruled out: the dips are GPU-bound; patch 0005 fixed an SDK busy-wait, −43% CPU)
 - `scripts/rgp_capture.sh 3` while playing the start of "Sgt. Pepper" (the earlier traces were
   all FSI). Open with RGP 1.14.1 (`build/tools/rgp-1.14.1/x/RadeonDeveloperToolSuite-2023-02-15-1051/RadeonGPUProfiler`);
   useful views: Events → Event timing with "Group by pass" + collapsed tree + zoom to fit

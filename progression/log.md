@@ -116,3 +116,9 @@
 - Patch 0003: per-command counters in the Vulkan backend (`gpu cmds:` in `--perf_log`) and `REXGLUE_GPU_PLUGIN_DIR`; `build_sdk.sh` rebuilds the xenos plugin too. Gameplay has ~195 shared-memory uploads per frame, ~106 of them breaking a render pass.
 - RGP trace on fbo (user screenshots, `build/rgp/shots3/`): render-target transfers ~18% of a 15.6 ms frame; gaps in wavefront occupancy between barriers.
 - Patch 0004: `--shared_memory_upload_coalesce_kb` (off by default). User runs D/E (256/1024 KB): 60-65% fewer barriers and render passes, no glitches, but no fps gain (more bytes copied on the GPU command thread). Kept as an option.
+
+## 2026-11-02 (night, CPU profile) — Dips are GPU-bound; SDK busy-wait fixed
+
+- `scripts/profile.sh` now logs to `build/run-profile.log` (no longer truncates `build/run.log`), drops `--show_fps` (KI-14) and adds `--hitch_log_ms=35`.
+- Slow gameplay frames: the GPU command thread is ~19% busy, the main thread waits in `VdSwap`; the remaining dips are GPU work.
+- perf showed the SDK `Audio Worker` spinning (43% of CPU samples): `WaitMultiple` truncated sub-millisecond sleeps to 0. Patch 0005 sleeps in microseconds: CPU −43%, package power −4.4 W, no fps change.

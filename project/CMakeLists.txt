@@ -23,6 +23,7 @@ set(BEATLES_SOURCES
     src/hitch_tracer.cpp
     src/gpu_capture.cpp
     src/renderdoc_guard.cpp
+    src/world_rate_hooks.cpp
 )
 
 if(WIN32)

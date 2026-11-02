@@ -142,3 +142,8 @@ void NoteGuestBase(uint8_t* base) {
     std::thread(ProbeLoop).detach();
   }
 }
+
+// Guest memory base once any input hook has run (nullptr before that).
+uint8_t* GuestBaseOrNull() {
+  return g_guest_base.load(std::memory_order_relaxed);
+}

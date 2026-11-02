@@ -111,3 +111,11 @@ includes = []
 0x82975EB0 = { name = "codeptr_82975EB0" }
 0x82990F98 = { name = "codeptr_82990F98" }
 0x829C9298 = { name = "codeptr_829C9298" }
+
+# ProcCounter::ProcCommands (decides which parts of the world are drawn this frame).
+# project/src/world_rate_hooks.cpp returns kProcessAll here when --full_rate_world is set.
+[[entrypoint.midasm_hook]]
+address = 0x8241BFC0
+name = "BeatlesProcCommandsHook"
+registers = ["r3"]
+return_on_true = true

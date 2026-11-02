@@ -55,6 +55,14 @@ if [ -f "$ROOT/build/sdk-lib/librexgpu-xenos.so" ]; then
 fi
 export LD_LIBRARY_PATH="$SDK_LIBS:${LD_LIBRARY_PATH:-}"
 
+# Game data: build/game_overlay is game/ plus our script changes (in-game "Quit to Desktop"
+# and PC settings menu, project/mods/), rebuilt here whenever its inputs change. The original
+# dump in game/ is never modified. GAME_DATA_ROOT=game scripts/run.sh runs the stock scripts.
+if [ -z "${GAME_DATA_ROOT:-}" ]; then
+  python3 -I "$ROOT/scripts/build_game_overlay.py" --if-stale
+  GAME_DATA_ROOT="$ROOT/build/game_overlay"
+fi
+
 # Log file: RUN_LOG=build/foo.log scripts/run.sh keeps A/B runs apart (the SDK appends).
 RUN_LOG="${RUN_LOG:-$ROOT/build/run.log}"
-exec "$ROOT/build/beatles/beatles" --game_data_root "$ROOT/game" --gpu_plugin xenos --log_file "$RUN_LOG" "$@"
+exec "$ROOT/build/beatles/beatles" --game_data_root "$GAME_DATA_ROOT" --gpu_plugin xenos --log_file "$RUN_LOG" "$@"

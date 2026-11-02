@@ -1,0 +1,29 @@
+diff --git i/src/graphics/graphics_system.cpp w/src/graphics/graphics_system.cpp
+index 8f2fcb0..f622326 100644
+--- i/src/graphics/graphics_system.cpp
++++ w/src/graphics/graphics_system.cpp
+@@ -32,8 +32,7 @@
+ #include <rex/ui/windowed_app_context.h>
+ 
+ REXCVAR_DEFINE_STRING(swap_post_effect, "none", "GPU", "Swap post effect: none, fxaa, fxaa_extreme")
+-    .allowed({"none", "fxaa", "fxaa_extreme"})
+-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++    .allowed({"none", "fxaa", "fxaa_extreme"});
+ 
+ REXCVAR_DEFINE_BOOL(store_shaders, true, "GPU",
+                     "Store shaders persistently and load them when loading games to avoid "
+@@ -136,6 +135,14 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+     return X_STATUS_UNSUCCESSFUL;
+   }
+   command_processor_->SetDesiredSwapPostEffect(ParseSwapPostEffect(REXCVAR_GET(swap_post_effect)));
++  // Apply later changes (e.g. from an in-game settings menu) without a restart; the
++  // command processor switches effects on its own thread.
++  rex::cvar::RegisterChangeCallback(
++      "swap_post_effect", [this](std::string_view, std::string_view value) {
++        if (command_processor_) {
++          command_processor_->SetDesiredSwapPostEffect(ParseSwapPostEffect(std::string(value)));
++        }
++      });
+ 
+   // Register GPU MMIO handlers
+   // GPU registers are at 0x7FC80000-0x7FCFFFFF

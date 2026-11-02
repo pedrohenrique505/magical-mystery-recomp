@@ -2,25 +2,37 @@
 
 ## >>> START HERE: top priority for the next session <<<
 
-**Epic "stable 60 fps in gameplay": done (2026-11-02, KI-14).** `execute_unclipped_draw_vs_on_cpu`
-(default in `scripts/run.sh`) removed nearly all over-budget GPU frames ("Sgt. Pepper": 7.9% →
-0.02%; the user confirmed other scenes), and the Vulkan direct resolve (patch 0007) added
-headroom. Candidates for the next session, pick with the user:
-- **Full-rate venue at 60** (`--full_rate_world`, now ~54 fps). Over-budget frames ~18.9 ms:
-  game draws/post ~8.8-10.8 ms, transfers ~3 ms, texture reloads after resolves ~1.3-1.6 ms.
-  The remaining levers are game-side quality options (MSAA level, blur/bloom/depth-of-field
-  passes): find where the engine sets them up with Ghidra and expose them through
-  `[[entrypoint.midasm_hook]]`s. Transfers are real data (skipping them corrupts the image).
-- **In-game "PC settings" section** (user's plan): a home for `--full_rate_world` and future
-  quality options; enhancements stay off by default.
-- **Real instruments** (section 5 below): USB guitar/drums/microphone.
-- If a new scene drops frames: `--gpu_frame_csv` + `--gpu_frame_categories`, then
-  `scripts/analyze_gpu_frames.py` and the `transfer profile:` log lines.
+**Epic "stable 60 fps with the PC Settings quality options".** The in-game PC Settings menu is
+done (2026-11-02 evening, see log.md): 2x internal resolution and FXAA visibly improve the image
+(user), but 2x drops the frame rate far below 60 on the Vega 6 (KI-17), and the full-rate venue
+still runs at ~54 fps. Goal: keep 60 fps with the best quality this iGPU can hold, and make the
+expensive options cheaper.
+1. **Measure first** (nothing is measured yet at 2x): `--perf_log` + `--gpu_frame_csv
+   [--gpu_frame_categories]` in "Sgt. Pepper" at 1x, 2x, and non-square
+   `draw_resolution_scale_x=2`/`_y=1` (half the cost of 2x2 per the Xenia FXAA/FSR post), each
+   with FXAA off/on. Summarise with `scripts/analyze_gpu_frames.py`; compare transfer and resolve
+   costs, which should scale with the pixel count.
+2. **Check what 2x scales:** the boot warning says the swap source is unscaled (logged once, on
+   the Bink logos). Log per-frame swap sizes in gameplay to confirm the final image is scaled.
+3. **Then optimise** where the numbers point: render-target transfers/resolves at scale
+   (KI-14 tooling), the full-rate venue (game-side quality passes via Ghidra and midasm hooks),
+   and consider a 1x2/2x1 "Internal Resolution" choice in the menu if it holds 60.
+4. **Menu polish (small):** localized strings for the other languages; maybe a "restart now"
+   action for restart-only settings.
 
 **How to measure:** on AC power (check `/sys/class/power_supply/*/status`; on battery the iGPU
 runs at 400 MHz), `RUN_LOG=build/runX.log scripts/run.sh --perf_log=true
 --gpu_frame_csv=build/frames.csv [--gpu_frame_categories=true]`, then
-`scripts/analyze_gpu_frames.py build/frames.csv --from 5`. Gameplay runs need the user.
+`scripts/analyze_gpu_frames.py build/frames.csv --from 5`. Gameplay runs need the user. The PC
+Settings choices in `~/.local/share/beatles/pc_settings.toml` apply to every run; the command
+line overrides them.
+
+### Done on 2026-11-02 evening (see log.md, KI-16, KI-17)
+- Harmonix archive/DTA tooling (`scripts/harmonix.py`) and the game-data overlay
+  (`scripts/build_game_overlay.py`, `project/mods/`), with the script SHA-1 table patched at boot.
+- `{pc_cfg ...}` script → host bridge (midasm hook in `DataArray::Execute`).
+- Main menu "Quit to Desktop"; Options → "PC Settings" (6 options, saved in `pc_settings.toml`).
+- Patch 0008: FXAA (`swap_post_effect`) switchable at runtime.
 
 ### Done on 2026-11-02 (see KI-14 and log.md)
 - Vulkan direct host resolve ported from xenia-edge (patch 0007), validated in gameplay.
@@ -48,7 +60,8 @@ Suggested order, from cheapest/most informative to most expensive.
 - [x] Gameplay frame pacing (KI-14): `--present_pacing` + FIFO, 0 dropped frames.
 - [x] GPU: FSI render-target path tried (removes transfer draws but no early-Z; slower in heavy scenes, `fbo` is the default again, KI-14).
 - [x] GPU headroom for 60 fps in gameplay (KI-14 fixes 4-5: `execute_unclipped_draw_vs_on_cpu`, Vulkan direct resolve).
-- [ ] Full-rate venue (`--full_rate_world`) at 60: see "START HERE".
+- [ ] Full-rate venue (`--full_rate_world`) and 2x internal resolution at 60: see "START HERE".
+- [x] In-game PC Settings menu and Quit to Desktop (log.md, 2026-11-02 evening).
 - [ ] Remove or gate the `--debug_probe` watch list once it is no longer needed (it only reads memory and is off by default).
 
 ## 2. Stability of the recompiled code

@@ -1,0 +1,76 @@
+; "PC Settings" screen (Options > PC Settings), appended to
+; ui/options/gen/options_console.dtb by scripts/build_game_overlay.py.
+;
+; It reuses the layout of the stock "Audio/Video Settings" panel (options_console.milo):
+; four rows with a checkbox (doubly, bass_boost, overscan, subtitles; their frames are
+; checkbox01..04.mesh, their ticks *_check.mesh) and two plain rows (mic_settings,
+; adjust_audio). Values live on the host: {pc_cfg ...} is handled by
+; project/src/pc_settings.cpp.
+;
+;   doubly.btn        [x] Full-Rate Venue (60 FPS)   full_rate_world
+;   bass_boost.btn    [x] Fullscreen                 fullscreen
+;   overscan.btn      [x] Keep Aspect Ratio          letterbox
+;   subtitles.btn     Internal Resolution: Nx        resolution_scale (after restart)
+;   mic_settings.btn  Texture Filtering: Nx / Off    texture_filter
+;   adjust_audio.btn  Anti-Aliasing: Off / FXAA / FXAA Extreme   antialiasing
+
+(objects
+   {new
+      UIPanel
+      pc_settings_panel
+      (file "options_console.milo")
+      (focus doubly.btn)
+      (enter
+         {gameplay_options.lbl set text_token pc_settings}
+         {doubly.btn set text_token pc_full_rate_world}
+         {bass_boost.btn set text_token pc_fullscreen}
+         {overscan.btn set text_token pc_letterbox}
+         {checkbox04.mesh set_showing FALSE}
+         {subtitles_check.mesh set_showing FALSE}
+         {$this update_all})
+      (TRANSITION_COMPLETE_MSG {$this update_helpbar {$this focus_name}})
+      (FOCUS_MSG {$this update_helpbar $new_focus})
+      (update_helpbar
+         ($new_focus)
+         {switch
+            $new_focus
+            ((doubly.btn bass_boost.btn overscan.btn)
+               {helpbar set_config ((cancel helpbar_back) (confirm helpbar_toggleoption))})
+            {helpbar set_config ((cancel helpbar_back) (confirm helpbar_changesetting))}})
+      (SELECT_MSG
+         {switch
+            $component
+            (doubly.btn {pc_cfg toggle full_rate_world})
+            (bass_boost.btn {pc_cfg toggle fullscreen})
+            (overscan.btn {pc_cfg toggle letterbox})
+            (subtitles.btn {pc_cfg cycle resolution_scale})
+            (mic_settings.btn {pc_cfg cycle texture_filter})
+            (adjust_audio.btn {pc_cfg cycle antialiasing})}
+         {$this update_all})
+      (update_all
+         {doubly_check.mesh set_showing {pc_cfg get full_rate_world}}
+         {bass_check.mesh set_showing {pc_cfg get fullscreen}}
+         {overscan_check.mesh set_showing {pc_cfg get letterbox}}
+         {if_else
+            {pc_cfg pending resolution_scale}
+            {subtitles.btn set_token_fmt pc_internal_res_restart_fmt {pc_cfg get resolution_scale}}
+            {subtitles.btn set_token_fmt pc_internal_res_fmt {pc_cfg get resolution_scale}}}
+         {if_else
+            {'==' {pc_cfg get texture_filter} 1}
+            {mic_settings.btn set text_token pc_texture_filter_off}
+            {mic_settings.btn set_token_fmt pc_texture_filter_fmt {pc_cfg get texture_filter}}}
+         {adjust_audio.btn
+            set
+            text_token
+            {switch
+               {pc_cfg get antialiasing}
+               (1 pc_aa_fxaa)
+               (2 pc_aa_fxaa_extreme)
+               pc_aa_off}})}
+   {new
+      BandScreen
+      pc_settings_screen
+      (panels meta background_panel main_popup_bg_panel pc_settings_panel)
+      (focus pc_settings_panel)
+      (back main_screen_2_popup)
+      (helpbar ((cancel helpbar_back) (confirm helpbar_select)))})

@@ -1,0 +1,21 @@
+; Added to the main menu panel (ui/main/gen/main.dtb) by scripts/build_game_overlay.py.
+; {pc_cfg ...} commands are handled by the host (project/src/script_bridge.cpp).
+
+; Cases appended to main_panel's (on_select ($name $user) {switch $name ...}).
+(on_select_cases
+   (pc_settings {ui goto_screen pc_settings_screen})
+   (quit_to_desktop {ui push_screen pc_quit_confirm_screen}))
+
+; New top-level objects appended to main.dtb.
+(objects
+   {new
+      BandScreen
+      pc_quit_confirm_screen
+      (panels dialog_panel)
+      (focus dialog_panel)
+      (enter {dialog_panel set_yesno pc_quit_confirm no.btn})
+      (SELECT_MSG
+         {switch
+            $component
+            (yes.btn {pc_cfg quit})
+            (no.btn {ui pop_screen})})})

@@ -25,6 +25,9 @@ set(BEATLES_SOURCES
     src/renderdoc_guard.cpp
     src/world_rate_hooks.cpp
     src/gpu_frame_log.cpp
+    src/script_bridge.cpp
+    src/pc_settings.cpp
+    src/game_checksums.cpp
 )
 
 if(WIN32)

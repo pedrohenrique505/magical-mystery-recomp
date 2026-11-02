@@ -172,3 +172,42 @@
   pending. `scripts/build_sdk.sh` and the patch series now go up to 0007.
 - Gameplay validation (user, "Sgt. Pepper", `--full_rate_world`): EDRAM dumps 39.6 → 3.8 per
   frame, GPU 15.8 → 14.9 ms per frame, guest 51.6 → 53.6 fps, no glitches. Validated.
+
+## 2026-11-02 (evening) — In-game "PC Settings" and "Quit to Desktop"
+
+- **Decision (user):** the PC options live inside the game's own menus, not in a host ImGui
+  overlay. That meant changing the game's DTA scripts.
+- **Archive format:** `gen/main_xbox.hdr` is ark version 5, little-endian, Rand2-encrypted
+  (seed = first 4 bytes, cipher from the RB3 decomp `math/Rand2.cpp`); file offsets are global
+  across the 10 `.ark` parts. `.dtb` scripts use the same cipher and the old DataArray layout
+  (`u16 count, u32 line`; `#autorun` is a marker node). `scripts/harmonix.py` reads and writes
+  both; all 443 scripts and the header round-trip byte for byte.
+- **Menus are data:** `config/gen/main_menu.dtb` holds the main-menu tree (`proj9_menu`),
+  button labels come from `ui/locale/*/gen/locale.dtb`, and `main.milo` has 7 buttons (stock
+  top level uses 6, Options 5). New entries need no `.milo` editing.
+- **Delivery without touching `game/`:** `scripts/build_game_overlay.py` writes
+  `build/game_overlay/` (symlinks to `game/`, patched scripts in a new `gen/main_xbox_10.ark`,
+  a rewritten header pointing at them); `scripts/run.sh` uses it as `--game_data_root`.
+- **Disc Read Error:** any changed script made the game call `XamShowDirtyDiscErrorUI`. The
+  executable keeps a SHA-1 of every script (RB3's `gFileChecksums`): 580 entries of
+  `{char* path; u8 sha1[20]}` at `0x829F4C48..0x829F82A8` in `.data`. The overlay lists the new
+  hashes in `checksums.txt` and `project/src/game_checksums.cpp` writes them into guest memory
+  right after the XEX is mapped (KI-16).
+- **Script → host bridge:** `DataArray::Execute` (`0x823A7768`) falls through to `0x823A78A4`
+  for a command whose head is neither an object nor a registered DataFunc. A midasm hook there
+  (`project/src/script_bridge.cpp`) handles `{pc_cfg ...}` and jumps to the epilogue. Registered
+  DataFuncs (136 in the core table, `std::map` at `0x82A47CF4`) were mapped along the way.
+- **Result (user-validated):** "Quit to Desktop" at the end of the main menu (yes/no dialog,
+  closes like Alt+F4) and Options → "PC Settings" with Full-Rate Venue, Fullscreen, Keep Aspect
+  Ratio, Internal Resolution 1x-3x (after restart), Texture Filtering Off-16x and Anti-Aliasing
+  Off/FXAA/FXAA Extreme. Choices persist in `<user data>/pc_settings.toml`
+  (`~/.local/share/beatles/`) and rank below `REX_*` variables and the command line.
+- **Bug found while testing:** the first "2x" test was really 1x. `resolution_scale` and
+  `anisotropic_override` belong to the GPU plugin, which registers them after startup, and
+  `SetFlagByName` on an unknown cvar fails silently. The saved choices are now applied as a
+  config file (`pc_settings.cvars.toml` via `rex::cvar::LoadConfig`), whose values the SDK keeps
+  for cvars registered later.
+- **Anti-aliasing:** anisotropic filtering does not touch geometry edges (the user's jaggies).
+  The Vulkan backend already had an FXAA swap pass (`swap_post_effect`, as Xenia recommends for
+  games without good AA); patch 0008 makes it switch live. User: 2x internal resolution and FXAA
+  both improve the image clearly, but 2x costs a lot of frame rate on the Vega 6.

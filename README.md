@@ -50,7 +50,8 @@ cmake -S project -B build/beatles -G Ninja -DCMAKE_BUILD_TYPE=Release \
 nice -n 10 ninja -C build/beatles -j2
 
 # 5. Recommended: rebuild the SDK runtime and Vulkan GPU plugin with this project's patches
-#    (patches/rexglue-sdk/: presentation and busy-wait fixes, Vulkan direct resolve, profiling).
+#    (patches/rexglue-sdk/: presentation and busy-wait fixes, Vulkan direct resolve, profiling,
+#    runtime FXAA switching).
 #    ~15 min at -j2 the first time; scripts/run.sh picks up build/sdk-lib automatically.
 scripts/build_sdk.sh            # scripts/build_sdk.sh --remove goes back to the prebuilt SDK
 
@@ -59,6 +60,25 @@ scripts/run.sh
 ```
 
 The run log is written to `build/run.log` (`RUN_LOG=path` picks another file).
+
+`scripts/run.sh` runs the game from `build/game_overlay/`, which `scripts/build_game_overlay.py`
+(re)builds from your `game/` folder: symlinks to your files plus a few changed game scripts
+(`project/mods/`) that add **Options → PC Settings** and **Quit to Desktop** to the game's own
+menus. Your dump is never modified; `GAME_DATA_ROOT=game scripts/run.sh` runs the stock scripts.
+
+### PC Settings (in the game: Options → PC Settings)
+
+| Option | Values | Notes |
+|---|---|---|
+| Full-Rate Venue (60 FPS) | on/off | draws the 3D venue every frame instead of the engine's 30 fps (~54 fps on a Vega 6) |
+| Fullscreen | on/off | |
+| Keep Aspect Ratio | on/off | off stretches the image to the window |
+| Internal Resolution | 1x, 2x, 3x | takes effect after a restart; much sharper, much slower |
+| Texture Filtering | Off, 2x-16x | anisotropic filtering (sharp textures at oblique angles; not edges) |
+| Anti-Aliasing | Off, FXAA, FXAA Extreme | smooths polygon edges |
+
+Choices are saved in `~/.local/share/beatles/pc_settings.toml`; command-line options and
+`REX_<CVAR>` variables override them.
 
 `scripts/run.sh` sets the defaults this game needs, as `REX_<CVAR>` environment variables (anything on the command line still wins): vsync with frame pacing locked to the display (`--present_pacing`), host render targets (`fbo`), and `--execute_unclipped_draw_vs_on_cpu` (upstream Xenia's default; without it the camera cuts drop frames). Measure on AC power: on battery the iGPU is capped.
 
@@ -69,7 +89,6 @@ scripts/run.sh --show_fps true      # guest frame rate in the top-left corner (F
 scripts/run.sh --perf_log true      # every 2 s: guest fps, audio pacing, host frames painted/dropped
 scripts/run.sh --gpu_frame_csv=build/frames.csv   # per-frame GPU time; scripts/analyze_gpu_frames.py summarises it
 scripts/run.sh --gpu_frame_csv=build/frames.csv --gpu_frame_categories true   # plus GPU ms per kind of work and a transfer profile
-scripts/run.sh --full_rate_world true   # draw the 3D venue every frame instead of the engine's 30 fps (~54 fps on a Vega 6)
 scripts/run.sh --wait_profile true  # every 2 s: per-thread time spent in kernel waits and file reads
 scripts/run.sh --audio_dump build/audio.raw   # raw audio frames; see scripts/analyze_audio_dump.py
 scripts/profile.sh                  # perf record + host GPU load, writes build/perf.data
@@ -96,7 +115,8 @@ drums use A/B/Y/X for the pads and LB for the kick.
 | Path | Contents |
 |---|---|
 | `project/` | ReXGlue project: manifest (`beatles_manifest.toml`), `CMakeLists.txt`, host app (`src/`). `generated/` is codegen output and is git-ignored. |
-| `scripts/` | Disc extraction, run and profiling scripts (`run.sh`, `profile.sh`, `rgp_capture.sh`), the patched SDK build (`build_sdk.sh`), analysis of audio dumps, GPU frame logs and screen captures, and PyGhidra tools that find functions the static analysis missed (`find_orphans.py`, `size_of.py`, `resolve_orphans.py`). |
+| `scripts/` | Disc extraction, run and profiling scripts (`run.sh`, `profile.sh`, `rgp_capture.sh`), the patched SDK build (`build_sdk.sh`), the game-data overlay with our script changes (`build_game_overlay.py`, `harmonix.py`: Harmonix ark/DTA formats), analysis of audio dumps, GPU frame logs and screen captures, and PyGhidra tools that find functions the static analysis missed (`find_orphans.py`, `size_of.py`, `resolve_orphans.py`). |
+| `project/mods/` | DTA snippets added to the game's scripts (PC Settings screen, menu entries, strings), applied by `scripts/build_game_overlay.py`. |
 | `patches/rexglue-sdk/` | Patches to the ReXGlue SDK runtime and Vulkan plugin, applied in order by `scripts/build_sdk.sh`. |
 | `tools/` | Prebuilt ReXGlue SDK and the Ghidra XEX loader zip (git-ignored, see Setup). |
 | `third_party/` | Reference repositories, not built (git-ignored, see Setup). |

@@ -119,3 +119,12 @@ address = 0x8241BFC0
 name = "BeatlesProcCommandsHook"
 registers = ["r3"]
 return_on_true = true
+
+# DataArray::Execute, unknown-command path (head symbol is neither an object nor a
+# registered DataFunc). project/src/script_bridge.cpp handles {pc_cfg ...} here (the
+# in-game PC settings menu) and jumps to the epilogue, which returns r29.
+[[entrypoint.midasm_hook]]
+address = 0x823A78A4
+name = "BeatlesScriptCommandHook"
+registers = ["r27", "r29", "r30"]
+jump_address_on_true = 0x823A795C

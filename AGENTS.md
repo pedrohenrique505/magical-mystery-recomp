@@ -80,6 +80,16 @@ game/default.xex ──rexglue codegen──▶ project/generated/default/*.cpp 
 - Headless Python scripts: `GHIDRA_INSTALL_DIR=/opt/ghidra .venv/bin/python -I script.py ...` (PyGhidra 3.1.0 / JPype in `.venv`). Plain `analyzeHeadless` refuses Python scripts ("Ghidra was not started with PyGhidra"); use the PyGhidra route above. Use `space.getAddress(v)`, not `flat.toAddr(v)`, for addresses ≥ `0x80000000` (Java `int` overflow).
 - Instruction-level facts used so far: MSVC vtable adjustor thunks look like `addi r3,r3,-N ; b target` or `cmpwi r3,0 ; addi ... ; bne +8 ; li ...`.
 
+## Changing the game's scripts (menus, UI)
+
+The UI is DTA script (`.dtb`) inside `game/gen/main_xbox_*.ark`. `scripts/harmonix.py` reads/writes the encrypted ark header (v5) and `.dtb` files byte-exactly and has a DTA text parser/printer (decompile a script: `hx.format_dta(hx.load_dtb(raw)[1])`). Changes go in `project/mods/*.dta` and are applied to the parsed trees by `scripts/build_game_overlay.py`, which writes `build/game_overlay/` (new `gen/main_xbox_10.ark` + rewritten header + `checksums.txt`); `scripts/run.sh` rebuilds it when inputs change. Non-obvious facts:
+
+- **Every script is SHA-1-checked** against a table in the XEX `.data` (KI-16); a changed file without its hash in `checksums.txt` gives "Disc Read Error". `project/src/game_checksums.cpp` patches the table at boot; scripts missing from the table are logged.
+- **Script → host:** `{pc_cfg <cmd> ...}` reaches `project/src/script_bridge.cpp` (midasm hook on `DataArray::Execute`'s unknown-command path); arguments must be literals, symbols, strings or `$variables` (no nested commands). New host commands go in `project/src/pc_settings.cpp`.
+- A new panel can reuse an existing `.milo` layout (`(file "...")` is relative to the `.dtb`'s directory, so append the panel to a script in the same folder); widget names come from `strings` on the decompressed milo (`0xCBBEDEAF` header, zlib blocks).
+- Menu entries are data (`config/gen/main_menu.dtb`), labels are `locale.dtb` tokens (add new tokens to every language). `main.milo` has 7 buttons.
+- PC Settings choices are applied at startup as a config file, not with `SetFlagByName`: GPU-plugin cvars (`resolution_scale`, `anisotropic_override`, `swap_post_effect`) are registered after `OnConfigurePaths`, and setting an unregistered cvar fails silently.
+
 ## Debugging a run
 
 `build/run.log` is the SDK log (`--log_file`), appended per run, so truncate it (`: > build/run.log`) before a test run. Useful filters: `grep -v "Loader Message\|Creating graphics pipeline"` removes Vulkan noise. Crashes produce a core dump (`coredumpctl list`). `timeout 60 scripts/run.sh` is the usual smoke test; exit 124 means it ran until the timeout (no crash), 134 means abort (look for `[FATAL]`).

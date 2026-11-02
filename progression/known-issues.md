@@ -106,3 +106,26 @@
 - **Cause:** `rex::ui::RenderDocAPI::CreateIfConnected()` "detects" RenderDoc with `dlopen("librenderdoc.so")` without `RTLD_NOLOAD`, which loads it. RenderDoc does not handle Wayland windows, so nothing is presented.
 - **Fix:** `project/src/renderdoc_guard.cpp` overrides the function (exported, reached through the GOT) and only forwards when the library is already loaded.
 - **Capturing on purpose:** `SDL_VIDEODRIVER=x11 ENABLE_VULKAN_RENDERDOC_CAPTURE=1 scripts/run.sh --capture_slow_frames=N` (`project/src/gpu_capture.cpp`; XWayland is required for RenderDoc to see the window). Replaying a gameplay capture saturates the iGPU and makes the desktop unusable for minutes: let the user drive the qrenderdoc GUI (Performance Counter Viewer → GPU Duration, PS/CS Invocations, Rasterized Primitives → export CSV) instead of headless replays.
+
+## KI-16 — Modified game scripts trigger "Disc Read Error" (fixed in the host app)
+- **Symptom:** with any changed `.dtb` in the archive the game stops at the boot logo with the
+  SDK's "Disc Read Error" dialog (`XamShowDirtyDiscErrorUI called!` in the log); the same files
+  relocated unchanged load fine.
+- **Cause:** the executable checks each script against a built-in SHA-1 table (RB3 decomp:
+  `gFileChecksums`, `system/math/FileChecksum.h`): 580 entries of `{char* path; u8 sha1[20]}` at
+  `0x829F4C48..0x829F82A8` (`.data`), paths like `./config/gen/main_menu.dtb` and
+  `../../system/run/config/gen/...`. The hash covers the encrypted file as stored.
+- **Fix:** `scripts/build_game_overlay.py` writes `build/game_overlay/checksums.txt` and
+  `project/src/game_checksums.cpp` (`OnPostLoadXexImage`) replaces those entries in guest memory
+  before the game runs. A path missing from the table is logged as a warning.
+
+## KI-17 — Higher internal resolution is expensive; the boot logs say the swap source is unscaled
+- **Symptom:** "Internal Resolution 2x" (PC Settings, `resolution_scale`) clearly sharpens the
+  image but drops the frame rate far below 60 on the Vega 6 (user, 2026-11-02; not measured yet).
+  At boot the SDK warns `draw resolution scaling is enabled, but the swap source is unscaled
+  (1280x720)`; it logs once, on the first swap (the Bink intro logos), so it does not prove that
+  gameplay is unscaled.
+- **To investigate:** measure with `--perf_log`/`--gpu_frame_csv` at 1x vs 2x (and the cheaper
+  non-square `draw_resolution_scale_x=2` / `_y=1`); check per-frame swap sizes in gameplay
+  (`XELOG_GPU PRESENT` debug line); see whether render-target transfers and resolves grow with
+  the scale (KI-14 tooling).

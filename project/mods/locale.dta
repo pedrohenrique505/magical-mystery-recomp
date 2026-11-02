@@ -1,0 +1,15 @@
+; Localized strings appended to every ui/locale/*/gen/locale.dtb by
+; scripts/build_game_overlay.py (English text in all languages for now).
+(quit_to_desktop "Quit to Desktop")
+(pc_quit_confirm "Quit the game and return to the desktop?")
+(pc_settings "PC Settings")
+(pc_full_rate_world "Full-Rate Venue (60 FPS)")
+(pc_fullscreen "Fullscreen")
+(pc_letterbox "Keep Aspect Ratio")
+(pc_internal_res_fmt "Internal Resolution: %dx")
+(pc_internal_res_restart_fmt "Internal Resolution: %dx (after restart)")
+(pc_texture_filter_fmt "Texture Filtering: %dx")
+(pc_texture_filter_off "Texture Filtering: Off")
+(pc_aa_off "Anti-Aliasing: Off")
+(pc_aa_fxaa "Anti-Aliasing: FXAA")
+(pc_aa_fxaa_extreme "Anti-Aliasing: FXAA Extreme")

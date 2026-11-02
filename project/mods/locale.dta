@@ -8,6 +8,8 @@
 (pc_letterbox "Keep Aspect Ratio")
 (pc_internal_res_fmt "Internal Resolution: %dx")
 (pc_internal_res_restart_fmt "Internal Resolution: %dx (after restart)")
+(pc_internal_res_2x1 "Internal Resolution: 2x Horizontal")
+(pc_internal_res_2x1_restart "Internal Resolution: 2x Horizontal (after restart)")
 (pc_texture_filter_fmt "Texture Filtering: %dx")
 (pc_texture_filter_off "Texture Filtering: Off")
 (pc_aa_off "Anti-Aliasing: Off")

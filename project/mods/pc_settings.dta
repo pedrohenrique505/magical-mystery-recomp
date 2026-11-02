@@ -10,7 +10,9 @@
 ;   doubly.btn        [x] Full-Rate Venue (60 FPS)   full_rate_world
 ;   bass_boost.btn    [x] Fullscreen                 fullscreen
 ;   overscan.btn      [x] Keep Aspect Ratio          letterbox
-;   subtitles.btn     Internal Resolution: Nx        resolution_scale (after restart)
+;   subtitles.btn     Internal Resolution: 1x / 2x Horizontal / 2x / 3x
+;                                                    resolution_scale (after restart; 4 is
+;                                                    2x Horizontal)
 ;   mic_settings.btn  Texture Filtering: Nx / Off    texture_filter
 ;   adjust_audio.btn  Anti-Aliasing: Off / FXAA / FXAA Extreme   antialiasing
 
@@ -52,9 +54,18 @@
          {bass_check.mesh set_showing {pc_cfg get fullscreen}}
          {overscan_check.mesh set_showing {pc_cfg get letterbox}}
          {if_else
-            {pc_cfg pending resolution_scale}
-            {subtitles.btn set_token_fmt pc_internal_res_restart_fmt {pc_cfg get resolution_scale}}
-            {subtitles.btn set_token_fmt pc_internal_res_fmt {pc_cfg get resolution_scale}}}
+            {'==' {pc_cfg get resolution_scale} 4}
+            {subtitles.btn
+               set
+               text_token
+               {if_else
+                  {pc_cfg pending resolution_scale}
+                  pc_internal_res_2x1_restart
+                  pc_internal_res_2x1}}
+            {if_else
+               {pc_cfg pending resolution_scale}
+               {subtitles.btn set_token_fmt pc_internal_res_restart_fmt {pc_cfg get resolution_scale}}
+               {subtitles.btn set_token_fmt pc_internal_res_fmt {pc_cfg get resolution_scale}}}}
          {if_else
             {'==' {pc_cfg get texture_filter} 1}
             {mic_settings.btn set text_token pc_texture_filter_off}

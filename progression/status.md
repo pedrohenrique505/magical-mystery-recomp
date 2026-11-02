@@ -30,7 +30,7 @@ The recompiled game is **playable end to end with a gamepad emulating a guitar**
 - Saves/XContent, DLC, achievements, Live.
 - 4 functions still PENDING in the analysis (KI-1).
 - `--full_rate_world` misses 60 fps (~54) on the Vega 6; the rest is mostly the game's own drawing.
-- Internal resolution 2x2 runs at ~28 fps and 2x1 at ~50 fps (KI-17); with patch 0010, 2x1 reaches 57.6 fps with a softer image (threshold 640) or 54 fps sharp (threshold 320).
+- Internal resolution 2x2 runs at ~28 fps and 2x1 at ~50 fps (KI-17); with patch 0010 the menu's "2x Horizontal" (2x1, sharp) runs at 56.2 fps, not yet a stable 60.
 - PC Settings strings are English in every language; FSR/CAS need an SDK build with FidelityFX (not available).
 
 ## Useful numbers

@@ -17,7 +17,11 @@
 //   full_rate_world   bool  venue drawn every frame (world_rate_hooks.cpp)    live
 //   fullscreen        bool  SDK window fullscreen                               live
 //   letterbox         bool  SDK present_letterbox (keep 16:9, else stretch)     live
-//   resolution_scale  1..3  SDK resolution_scale (internal render scale)        restart
+//   resolution_scale  1, 4, 2, 3 (cycle order): internal render scale        restart
+//                     1x, 4 = "2x Horizontal" (draw_resolution_scale_x 2, y 1), 2x, 3x;
+//                     scaled choices also keep small offscreen surfaces at 1x
+//                     (draw_resolution_scale_threshold 640, MSAA mask 5 - patch 0010,
+//                     the sharp rule measured in KI-17)
 //   texture_filter    1,2,4,8,16  SDK anisotropic_override (1 = off)            live
 //   antialiasing      0 off, 1 FXAA, 2 FXAA extreme: SDK swap_post_effect       live
 //                     (patch 0008 makes it switch without a restart)
@@ -53,6 +57,9 @@ struct Setting {
   // Script value <-> cvar string.
   std::function<std::string(int32_t)> to_cvar;
   std::function<int32_t(const std::string&)> from_cvar;
+  // Optional: every cvar the value sets at startup (restart-only settings that span
+  // several cvars); when empty, just {cvar, to_cvar(value)}.
+  std::function<std::vector<std::pair<std::string, std::string>>(int32_t)> to_cvars;
 };
 
 std::string BoolStr(int32_t v) { return v ? "true" : "false"; }
@@ -86,6 +93,29 @@ int32_t AnisoFromCvar(const std::string& s) {
   }
 }
 
+// Internal resolution choices (see the header comment).
+constexpr int32_t kResolution2xHorizontal = 4;
+std::vector<std::pair<std::string, std::string>> ResolutionToCvars(int32_t v) {
+  bool horizontal = v == kResolution2xHorizontal;
+  int32_t scale = horizontal ? 1 : v;
+  bool scaled = horizontal || v > 1;
+  return {
+      {"resolution_scale", std::to_string(scale)},
+      {"draw_resolution_scale_x", horizontal ? "2" : std::to_string(scale)},
+      {"draw_resolution_scale_y", std::to_string(scale)},
+      {"draw_resolution_scale_threshold", scaled ? "640" : "0"},
+      {"draw_resolution_scale_threshold_msaa_mask", "5"},
+  };
+}
+int32_t ResolutionFromCvars(const std::string& resolution_scale) {
+  int32_t scale = ParseInt(resolution_scale);
+  if (scale <= 1 && ParseInt(rex::cvar::GetFlagByName("draw_resolution_scale_x")) == 2 &&
+      ParseInt(rex::cvar::GetFlagByName("draw_resolution_scale_y")) <= 1) {
+    return kResolution2xHorizontal;
+  }
+  return std::max(scale, int32_t(1));
+}
+
 std::string AaToCvar(int32_t v) {
   return v == 1 ? "fxaa" : v == 2 ? "fxaa_extreme" : "none";
 }
@@ -98,8 +128,9 @@ const std::array<Setting, 6>& Settings() {
       {"full_rate_world", "full_rate_world", {0, 1}, false, BoolStr, ParseBool},
       {"fullscreen", "fullscreen", {0, 1}, false, BoolStr, ParseBool},
       {"letterbox", "present_letterbox", {0, 1}, false, BoolStr, ParseBool},
-      {"resolution_scale", "resolution_scale", {1, 2, 3}, true,
-       [](int32_t v) { return std::to_string(v); }, ParseInt},
+      {"resolution_scale", "resolution_scale", {1, kResolution2xHorizontal, 2, 3}, true,
+       [](int32_t v) { return std::to_string(v == kResolution2xHorizontal ? 1 : v); },
+       ResolutionFromCvars, ResolutionToCvars},
       {"texture_filter", "anisotropic_override", {1, 2, 4, 8, 16}, false, AnisoToCvar,
        AnisoFromCvar},
       {"antialiasing", "swap_post_effect", {0, 1, 2}, false, AaToCvar, AaFromCvar},
@@ -265,10 +296,14 @@ void LoadPcSettings(const std::filesystem::path& user_data_root) {
       for (const auto& s : Settings()) {
         auto it = g_stored.find(s.key);
         if (it != g_stored.end()) {
-          std::string v = s.to_cvar(it->second);
-          bool is_number_or_bool = v == "true" || v == "false" ||
-                                   v.find_first_not_of("-0123456789") == std::string::npos;
-          out << s.cvar << " = " << (is_number_or_bool ? v : "\"" + v + "\"") << "\n";
+          auto cvars = s.to_cvars ? s.to_cvars(it->second)
+                                  : std::vector<std::pair<std::string, std::string>>{
+                                        {s.cvar, s.to_cvar(it->second)}};
+          for (const auto& [name, v] : cvars) {
+            bool is_number_or_bool = v == "true" || v == "false" ||
+                                     v.find_first_not_of("-0123456789") == std::string::npos;
+            out << name << " = " << (is_number_or_bool ? v : "\"" + v + "\"") << "\n";
+          }
         }
       }
     }

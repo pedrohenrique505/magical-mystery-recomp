@@ -12,14 +12,16 @@ expensive options cheaper.
    reach on this iGPU).
 2. [x] **Patch 0009:** direct resolve under resolution scaling (EDRAM dumps 19.6 → 2.8 per
    frame, ~−1 ms; 2x1 48 → 50 fps), validated without glitches.
-3. **Next, in order:** (a) port xenia-edge 74db632 per-surface scale
+3. [x] **Patch 0010** per-surface scale (xenia-edge 74db632) + MSAA mask: sharp 2x1 at 56.2
+   fps (KI-17); offered in the menu as "Internal Resolution: 2x Horizontal" (1x stays default).
+4. **Next, in order:** (a) ~~port xenia-edge 74db632 per-surface scale~~ (done, see 3)
    (`draw_resolution_scale_threshold`: small-pitch surfaces, e.g. downscaled post chains and
    shadow maps, stay 1x) to cut texture loads/resolves/transfers at scale, aiming at 2x1 at 60;
    (b) cheap xenia-edge ports that help 1x too: 40cee11 (duplicate texture loads), fb96381
    (render targets piling up), 3989ba3 (resolve MSAA addressing), 44f5b4a (vblank pacing);
    (c) the full-rate venue (game-side quality passes via Ghidra and midasm hooks); then offer a
    2x1 "Internal Resolution" choice in the menu if it holds 60.
-4. **Menu polish (small):** localized strings for the other languages; maybe a "restart now"
+5. **Menu polish (small):** localized strings for the other languages; maybe a "restart now"
    action for restart-only settings.
 
 **How to measure:** on AC power (check `/sys/class/power_supply/*/status`; on battery the iGPU

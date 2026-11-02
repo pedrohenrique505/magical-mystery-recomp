@@ -244,4 +244,8 @@
 - Added `--draw_resolution_scale_threshold_msaa_mask`: threshold 640 with mask 5 (1x and 4x
   MSAA only) keeps the 2xMSAA screen surface scaled: sharp (user) at 56.2 fps, 21% of 2 s
   windows under 55 fps (threshold 320: 54.1 fps, 37%).
+- PC Settings → Internal Resolution now cycles 1x → 2x Horizontal → 2x → 3x
+  (`resolution_scale = 4` in `pc_settings.toml` is 2x Horizontal); every scaled choice also
+  sets threshold 640 with MSAA mask 5. A setting can now write several cvars at startup
+  (`Setting::to_cvars` in `project/src/pc_settings.cpp`).
 

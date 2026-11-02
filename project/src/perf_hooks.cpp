@@ -54,6 +54,8 @@ REXCVAR_DEFINE_BOOL(show_fps, false, "Debug",
 
 // present_hooks.cpp: host mailbox/paint counters, reset on each call.
 std::string PresentStatsLine();
+// present_hooks.cpp: blocks until the previous frame was painted (--present_pacing).
+void PacePresent();
 // gpu_capture.cpp: RenderDoc captures of slow frames (--capture_slow_frames).
 void GpuCaptureOnSwap(double frame_ms);
 // hitch_tracer.cpp
@@ -366,6 +368,7 @@ REX_EXTERN(__imp__VdSwap) {
   prev = now;
   CountSwap();
   sdk_impl(ctx, base);
+  PacePresent();
   prev_call_ms = std::chrono::duration<double, std::milli>(Clock::now() - now).count();
 }
 

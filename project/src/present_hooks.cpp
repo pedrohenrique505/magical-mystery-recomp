@@ -20,6 +20,17 @@
 //
 // PresentStatsLine() returns and resets the counters; perf_hooks.cpp appends
 // it to each --perf_log line.
+//
+// Present pacing (--present_pacing true): the guest paces itself on the SDK's
+// "GPU VSync" thread, a free-running 60 Hz timer unrelated to the display's
+// real refresh. With a vsynced present mode the two clocks drift in phase, and
+// whenever two guest frames reach the mailbox within one display refresh the
+// older one is dropped and a frame is shown twice (judder with every counter
+// at 60). PacePresent(), called by the VdSwap hook after the SDK queued the
+// swap, blocks the guest until the previous frame has been painted, so the
+// guest is never more than one frame ahead of the screen and settles onto the
+// display's vsync. Frames that never reach the mailbox or are never painted
+// are absorbed by resynchronizing on timeout.
 
 #include <dlfcn.h>
 
@@ -34,9 +45,16 @@
 #include <mutex>
 #include <string>
 
+#include <condition_variable>
+
 #include <fmt/format.h>
 
+#include <rex/cvar.h>
 #include <rex/ui/presenter.h>
+
+REXCVAR_DEFINE_BOOL(present_pacing, false, "Debug",
+                    "Block VdSwap until the previous guest frame was painted, locking the guest "
+                    "frame rate to the display refresh");
 
 namespace {
 
@@ -79,6 +97,33 @@ PresentStats& Stats() {
   return stats;
 }
 
+// Lifetime totals for present pacing (never reset), guarded by Pacing().mutex.
+struct Pacing {
+  std::mutex mutex;
+  std::condition_variable cv;
+  uint64_t swaps = 0;       // VdSwap calls
+  uint64_t refreshes = 0;   // images written into the mailbox
+  uint64_t new_paints = 0;  // paints that consumed a new image
+  // Resync offsets for frames that were never refreshed / never painted.
+  int64_t refresh_offset = 0;
+  int64_t paint_offset = 0;
+  uint32_t timeouts = 0;  // reported and reset by PresentStatsLine
+};
+
+Pacing& Pace() {
+  static Pacing pacing;
+  return pacing;
+}
+
+void NotifyPacing(bool refresh) {
+  Pacing& p = Pace();
+  {
+    std::lock_guard<std::mutex> guard(p.mutex);
+    ++(refresh ? p.refreshes : p.new_paints);
+  }
+  p.cv.notify_all();
+}
+
 // Builds an Itanium C++ ABI member function pointer ({address, this-adjust 0})
 // for a non-virtual member found in the SDK.
 template <typename MemberFn>
@@ -110,7 +155,39 @@ std::string PresentStatsLine() {
       s.refreshes > s.new_frames ? s.refreshes - s.new_frames : 0, s.new_frame_intervals.Take(),
       s.refresh_intervals.Take());
   s.refreshes = s.paints = s.new_frames = 0;
+  if (REXCVAR_GET(present_pacing)) {
+    Pacing& p = Pace();
+    std::lock_guard<std::mutex> pace_guard(p.mutex);
+    line += fmt::format("; pacing timeouts {}", p.timeouts);
+    p.timeouts = 0;
+  }
   return line;
+}
+
+void PacePresent() {
+  static const bool enabled = REXCVAR_GET(present_pacing);
+  if (!enabled) return;
+  Pacing& p = Pace();
+  std::unique_lock<std::mutex> lock(p.mutex);
+  ++p.swaps;
+  // Frames before this swap that are not yet in the mailbox / not yet painted.
+  auto pending_refresh = [&] {
+    return int64_t(p.swaps - 1) - int64_t(p.refreshes) - p.refresh_offset;
+  };
+  auto pending_paint = [&] {
+    return int64_t(p.refreshes) - int64_t(p.new_paints) - p.paint_offset;
+  };
+  // Counts can only be negative if an earlier resync overshot; undo that part.
+  if (pending_refresh() < 0) p.refresh_offset += pending_refresh();
+  if (pending_paint() < 0) p.paint_offset += pending_paint();
+  const bool done = p.cv.wait_for(lock, std::chrono::milliseconds(50), [&] {
+    return pending_refresh() <= 0 && pending_paint() <= 0;
+  });
+  if (!done) {
+    ++p.timeouts;
+    if (pending_refresh() > 0) p.refresh_offset += pending_refresh();
+    if (pending_paint() > 0) p.paint_offset += pending_paint();
+  }
 }
 
 namespace rex::ui {
@@ -132,6 +209,7 @@ bool Presenter::RefreshGuestOutput(uint32_t frontbuffer_width, uint32_t frontbuf
     ++s.refreshes;
     s.refresh_intervals.Add(Clock::now());
   }
+  if (refreshed) NotifyPacing(true);
   return refreshed;
 }
 
@@ -147,16 +225,21 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
   // Only the paint path asks for the paint config; screenshots pass nullptr.
   if (paint_config_out) {
     const uint32_t index = mailbox_index_or_max_if_inactive_out;
-    PresentStats& s = Stats();
-    std::lock_guard<std::mutex> guard(s.mutex);
-    ++s.paints;
-    // The producer never writes into the acquired image, so a different index
-    // means a newer image.
-    if (index != UINT32_MAX && index != s.last_index) {
-      ++s.new_frames;
-      s.new_frame_intervals.Add(Clock::now());
+    bool is_new = false;
+    {
+      PresentStats& s = Stats();
+      std::lock_guard<std::mutex> guard(s.mutex);
+      ++s.paints;
+      // The producer never writes into the acquired image, so a different
+      // index means a newer image.
+      if (index != UINT32_MAX && index != s.last_index) {
+        ++s.new_frames;
+        s.new_frame_intervals.Add(Clock::now());
+        is_new = true;
+      }
+      s.last_index = index;
     }
-    s.last_index = index;
+    if (is_new) NotifyPacing(false);
   }
   return lock;
 }

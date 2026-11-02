@@ -17,6 +17,8 @@ set(BEATLES_SOURCES
     src/net_hooks.cpp
     src/shm_cleanup.cpp
     src/debug_probe.cpp
+    src/perf_hooks.cpp
+    src/wait_profiler.cpp
 )
 
 if(WIN32)

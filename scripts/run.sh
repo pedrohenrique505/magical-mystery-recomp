@@ -14,5 +14,11 @@ for f in /dev/shm/xenia_memory_*; do
   fi
 done
 
+# Make SDL pull audio one guest frame (256 samples, 5.3 ms) at a time. With the default
+# device buffer SDL pulls ~4 frames at once, so the SDK runs the game's XAudio callback in
+# bursts; the game's mixer (on another guest thread) cannot keep up with back-to-back
+# callbacks and resubmits a stale buffer, which sounds like constant crackling (KI-13).
+export SDL_AUDIO_DEVICE_SAMPLE_FRAMES="${SDL_AUDIO_DEVICE_SAMPLE_FRAMES:-256}"
+
 export LD_LIBRARY_PATH="$ROOT/tools/rexglue/linux-amd64/lib:${LD_LIBRARY_PATH:-}"
 exec "$ROOT/build/beatles/beatles" --game_data_root "$ROOT/game" --gpu_plugin xenos --log_file "$ROOT/build/run.log" "$@"

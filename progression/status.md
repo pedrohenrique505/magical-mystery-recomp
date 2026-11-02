@@ -33,4 +33,4 @@ The recompiled game **boots, plays the intro, navigates menus, creates a party, 
 - Manifest: 52 `orphan_*`, 42 `codeptr_*` and 2 `thunk_*` entries in `[entrypoint.functions]`, plus 1 `[[entrypoint.midasm_hook]]` (`ProcCounter::ProcCommands`). Generated code has 0 unresolved-branch sites; 4 functions still PENDING.
 - Title: ID `454108B1`, XEX version 0.0.0.1 (no title update applied), filetime 2009-06-15.
 - Environment: 8 GB RAM, clang 23, Ghidra 12.1.2, Java 27, Python 3.14.
-- SDK patches (`patches/rexglue-sdk/`): 0001-0002 presenter, 0003 GPU command counters + plugin dir, 0004 upload coalescing (off), 0005 busy-wait fix, 0006 per-frame GPU timing (`--gpu_frame_csv`).
+- SDK patches (`patches/rexglue-sdk/`): 0001-0002 presenter, 0003 GPU command counters + plugin dir, 0004 upload coalescing (off), 0005 busy-wait fix, 0006 per-frame GPU timing (`--gpu_frame_csv`), 0007 Vulkan direct host resolve (`--direct_host_resolve`, on).

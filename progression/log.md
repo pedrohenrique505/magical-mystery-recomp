@@ -159,3 +159,14 @@
 - Category run at full rate: game draws/post ~10.8 ms of an over-budget frame, transfers 3.3,
   EDRAM dump 1.5, resolve 1.4, texture reload 1.6. Next: port xenia-edge's Vulkan direct
   resolve (removes the dump), then game-side quality options via Ghidra.
+
+## 2026-11-02 (late night) — Vulkan direct host resolve (patch 0007)
+
+- The SDK had `TryResolveCopyDirectly` and pipeline layouts for a direct resolve on Vulkan, but
+  the function always fell back to the EDRAM dump ("until source-image direct shaders land").
+- Ported xenia-edge's direct resolve shader (`has207/xenia-edge` `aa2efeaf`, `e1ba7952`) into
+  the SDK's dump shader generator as a `DumpPipelineKey::direct_resolve` variant, reusing the
+  SDK's own per-format packing; eligibility follows edge (fast copies only, no resolution
+  scaling, source fully owned by render targets with the resolve's layout).
+- Intro A/B: GPU per frame 6.79 → 6.04 ms, EDRAM dumps 5 → 3 per frame. Gameplay validation
+  pending. `scripts/build_sdk.sh` and the patch series now go up to 0007.

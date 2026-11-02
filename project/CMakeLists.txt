@@ -20,6 +20,7 @@ set(BEATLES_SOURCES
     src/perf_hooks.cpp
     src/present_hooks.cpp
     src/wait_profiler.cpp
+    src/renderdoc_guard.cpp
 )
 
 if(WIN32)

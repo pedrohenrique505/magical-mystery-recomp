@@ -2,52 +2,32 @@
 
 ## >>> START HERE: top priority for the next session <<<
 
-**Epic: stable 60 fps in gameplay.** State on 2026-11-02 (KI-14): songs average ~58-59 fps,
-GPU-bound (Vega 6 iGPU at its 1500 MHz top clock). Drops are now rarer but still visible, and
-the user sees the biggest ones **on camera cuts** (e.g. "Sgt. Pepper", the bandstand shot with
-the crowd and sunflower field behind the band). What is already known about them:
-- They are isolated ~34-36 ms frames (a frame that missed the 16.7 ms budget and one vsync),
-  typically 2-6 per 2 s window, i.e. the GPU frame time sits close to 16.7 ms and heavier views
-  push it over.
-- Not CPU: the GPU command thread uses ~19% of a slow frame; the main thread waits in `VdSwap`.
-- Not pipeline compilation: no pipeline is created during gameplay (all at load time).
-- Slow windows coincide with more texture uploads (~25 per frame) — possibly texture
-  loading/conversion on camera cuts (new LODs/streamed textures), worth confirming.
-- Not barriers/uploads: coalescing cut barriers by 60% with no gain (patch 0004).
-- The venue is drawn at half rate on purpose (`emulate_fps` 30); `--full_rate_world` exists
-  but is GPU-bound at ~43 fps.
+**Epic: stable 60 fps in gameplay — main cause fixed on 2026-11-02 (KI-14, fix 4).**
+`execute_unclipped_draw_vs_on_cpu=true` (default in `scripts/run.sh`) removed nearly all
+over-budget GPU frames in "Sgt. Pepper" (7.9% → 0.02%), no glitches. What is left:
+- **Confirm on other songs/venues** (Cavern, Shea Stadium, Abbey Road dreamscapes, the pre-song
+  venue fly-through) with `--gpu_frame_csv` + `scripts/analyze_gpu_frames.py`; look for frames
+  with `busy_ms` > 16.7 and check the `transfer profile:` log lines (`--gpu_frame_categories`).
+- **Headroom left per frame** (Sgt. Pepper, venue frames 13.1 ms): transfers 2.8 ms, dump +
+  resolve + texture reload ~2.5 ms, game draws/post ~7.5 ms. If another scene is over budget:
+  - xenia-edge (`has207/xenia-edge`) `aa2efeaf` "Resolve host render targets directly into
+    shared memory" would remove the EDRAM dump before each resolve (~1 ms/frame here); check
+    first what the SDK's existing `direct_host_resolve` cvar already covers.
+  - Remaining transfers are real data (skipping them breaks the image, KI-14); a finer
+    approach would need to know which EDRAM ranges the game overwrites before reading
+    (Ghidra on the engine's surface setup) — only if still needed.
+- `--full_rate_world` (venue every frame) is worth re-measuring now that frames are cheaper:
+  it was GPU-bound at ~43 fps before fix 4.
 
-### Step 1: catch a camera-cut frame and see what is different
-- Add per-frame (not per-2 s) logging around slow frames: extend `--hitch_log_ms`
-  (`project/src/hitch_tracer.cpp`) to print the GPU command counters of the slow frame and of
-  the frames before it (needs a per-frame snapshot of `rex_gpu_take_command_stats`, patch 0003;
-  add counters for texture-cache work: textures loaded/converted, resolves, render-target
-  transfers — `render_target_cache.cpp` transfer draws, `texture_cache` loads).
-- Capture an RGP trace exactly on a camera cut: `scripts/rgp_capture.sh` with a trigger on a
-  single slow frame (`--rgp_slow_frames` currently needs 10 of 30 slow; add a
-  "single frame > N ms" mode in `project/src/gpu_capture.cpp`). Note an RGP trace is of the
-  *next* frame; with a cut the following frames are usually still heavy.
-- Compare that frame with a normal one: render-target transfer time (~18% of a normal frame,
-  `vkCmdDraw(6,1,0,0)`), texture uploads/compute conversion (`vkCmdDispatch`), post passes.
-
-### Step 2: cut the GPU work that is avoidable
-- Render-target transfers of the host-render-target path (~2.9 ms of a 15.6 ms frame): find
-  which EDRAM ranges/formats force them (log in `VulkanRenderTargetCache` which source/dest
-  formats and sizes are transferred per frame) and whether a cheaper path exists (e.g. skip
-  depth transfers that are cleared right after, `--depth_transfer_not_equal_test`, keeping
-  formats compatible). Patches go in `patches/rexglue-sdk/`, built by `scripts/build_sdk.sh`
-  (it now rebuilds the xenos plugin too).
-- Texture uploads on camera cuts: if confirmed, look at pre-warming/caching in the texture
-  cache, or spreading uploads over frames.
-- Resolution scale is a last-resort lever (the game renders 1280x720; post passes are full
-  screen).
-
-**How to measure** (every change, on AC power, same song; gameplay runs need the user):
-`RUN_LOG=build/runX.log scripts/run.sh --perf_log=true --hitch_log_ms=35`; summarize per 2 s
-window (fps, windows < 55, GPU busy, `gpu cmds`). Screen captures and
-`scripts/count_distinct_frames.py` for what the user sees. No overlays while measuring.
+**How to measure:** on AC power (check `/sys/class/power_supply/*/status`; on battery the iGPU
+runs at 400 MHz), `RUN_LOG=build/runX.log scripts/run.sh --perf_log=true
+--gpu_frame_csv=build/frames.csv [--gpu_frame_categories=true]`, then
+`scripts/analyze_gpu_frames.py build/frames.csv --from 5`. Gameplay runs need the user.
 
 ### Done on 2026-11-02 (see KI-14 and log.md)
+- Per-frame GPU timing and per-category/transfer profiling (patch 0006).
+- Render-target transfers identified as the main variable cost; `execute_unclipped_draw_vs_on_cpu`
+  enabled.
 - Venue half rate explained (`emulate_fps`), `--full_rate_world` added (off by default).
 - GPU command counters in `--perf_log` (patch 0003), RGP traces on the fbo path.
 - Shared-memory upload coalescing tried (patch 0004, off by default): no gain.

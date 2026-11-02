@@ -35,6 +35,12 @@ export REX_VULKAN_ALLOW_PRESENT_MODE_MAILBOX="${REX_VULKAN_ALLOW_PRESENT_MODE_MA
 export REX_VULKAN_ALLOW_PRESENT_MODE_FIFO_RELAXED="${REX_VULKAN_ALLOW_PRESENT_MODE_FIFO_RELAXED:-false}"
 export REX_PRESENT_PACING="${REX_PRESENT_PACING:-true}"
 export REX_RENDER_TARGET_PATH_VULKAN="${REX_RENDER_TARGET_PATH_VULKAN:-fbo}"
+# Upstream Xenia's default (ReXGlue ships false): run the vertex shader of unclipped draws
+# (clears, full-screen quads) on the CPU to bound the EDRAM range they touch. Without it, the
+# whole EDRAM can be taken as used and host render-target ownership transfers copy up to 2048
+# tiles each; in "Sgt. Pepper" this halved transfer time and removed nearly all frames over
+# 16.7 ms of GPU work (KI-14).
+export REX_EXECUTE_UNCLIPPED_DRAW_VS_ON_CPU="${REX_EXECUTE_UNCLIPPED_DRAW_VS_ON_CPU:-true}"
 
 # Runtime libraries rebuilt from source with patches/rexglue-sdk (scripts/build_sdk.sh)
 # take precedence over the prebuilt SDK when present.

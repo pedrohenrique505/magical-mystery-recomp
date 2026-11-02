@@ -1,10 +1,10 @@
 # Current status
 
-_Last updated: 2026-11-02 (night)_
+_Last updated: 2026-11-02 (late night)_
 
 ## Summary
 
-The recompiled game **boots, plays the intro, navigates menus, creates a party, lists songs and plays a full song** with a gamepad emulating a guitar. Gameplay audio is clean (KI-13). Frame pacing is locked to vsync (KI-14) and songs average ~58-59 fps on host render targets, GPU-bound on the Vega 6 iGPU; the remaining drops are isolated ~35 ms frames, most visible on camera cuts. The 3D venue is drawn at half rate by design (`emulate_fps` 30; `--full_rate_world` forces full rate but is GPU-bound at ~43 fps). An SDK busy-wait was fixed (patch 0005: −43% CPU, −4 W).
+The recompiled game **boots, plays the intro, navigates menus, creates a party, lists songs and plays a full song** with a gamepad emulating a guitar. Gameplay audio is clean (KI-13). Frame pacing is locked to vsync (KI-14). With `execute_unclipped_draw_vs_on_cpu` (upstream Xenia's default, now set by `scripts/run.sh`) host render-target transfers stopped copying the whole EDRAM: in "Sgt. Pepper" no frame exceeds the 16.7 ms GPU budget any more (was 7.9%), including the sunflower/crowd shots; only isolated loading hitches remain. The 3D venue is drawn at half rate by design (`emulate_fps` 30; `--full_rate_world` forces full rate but is GPU-bound at ~43 fps). An SDK busy-wait was fixed (patch 0005: −43% CPU, −4 W).
 
 ## Working
 
@@ -33,4 +33,4 @@ The recompiled game **boots, plays the intro, navigates menus, creates a party, 
 - Manifest: 52 `orphan_*`, 42 `codeptr_*` and 2 `thunk_*` entries in `[entrypoint.functions]`, plus 1 `[[entrypoint.midasm_hook]]` (`ProcCounter::ProcCommands`). Generated code has 0 unresolved-branch sites; 4 functions still PENDING.
 - Title: ID `454108B1`, XEX version 0.0.0.1 (no title update applied), filetime 2009-06-15.
 - Environment: 8 GB RAM, clang 23, Ghidra 12.1.2, Java 27, Python 3.14.
-- SDK patches (`patches/rexglue-sdk/`): 0001-0002 presenter, 0003 GPU command counters + plugin dir, 0004 upload coalescing (off), 0005 busy-wait fix.
+- SDK patches (`patches/rexglue-sdk/`): 0001-0002 presenter, 0003 GPU command counters + plugin dir, 0004 upload coalescing (off), 0005 busy-wait fix, 0006 per-frame GPU timing (`--gpu_frame_csv`).

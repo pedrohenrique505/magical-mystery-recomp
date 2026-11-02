@@ -122,3 +122,31 @@
 - `scripts/profile.sh` now logs to `build/run-profile.log` (no longer truncates `build/run.log`), drops `--show_fps` (KI-14) and adds `--hitch_log_ms=35`.
 - Slow gameplay frames: the GPU command thread is ~19% busy, the main thread waits in `VdSwap`; the remaining dips are GPU work.
 - perf showed the SDK `Audio Worker` spinning (43% of CPU samples): `WaitMultiple` truncated sub-millisecond sleeps to 0. Patch 0005 sleeps in microseconds: CPU −43%, package power −4.4 W, no fps change.
+
+## 2026-11-02 (night, per-frame GPU log) — Tooling to see one camera cut
+
+- Patch 0006: timestamp queries around every Vulkan submission and per-frame deltas of the GPU
+  counters, plus new counters (guest draws, texture loads/bytes, resolves, EDRAM dumps,
+  render-target transfer draws). Exported as `rex_gpu_frame_timing_enable` /
+  `rex_gpu_take_frame_records`; `--gpu_frame_csv` writes one row per frame,
+  `scripts/analyze_gpu_frames.py` summarises it. Intro check: 5-12 ms of GPU per frame.
+- `scripts/build_sdk.sh` now rebuilds patched files from HEAD + all patches in a temporary copy
+  and only copies files that differ (per-patch "already applied" checks broke once 0006 touched
+  lines next to 0003).
+- `present_hooks.cpp`: plugin symbol lookup shared as `GpuPluginSymbol()`.
+- Searched online: no Xenia game patch for this title; xenia-edge has recent Vulkan
+  render-target/resolve work worth porting if the data points there (see `next-steps.md`).
+
+## 2026-11-02 (late night) — Render-target transfers: the cause of the camera-cut drops
+
+- Per-category GPU timestamps (patch 0006, `--gpu_frame_categories`): in the heavy venue frames
+  of "Sgt. Pepper" 43% of GPU time was render-target ownership transfers (~9 ms), not the
+  resolve chain (~3 ms). A transfer profile per (mode, formats, MSAA, pitch, EDRAM base) showed
+  ~50 kinds, some depth transfers covering all 2048 EDRAM tiles.
+- Experiment `--rt_transfer_skip_modes`: skipping all transfers hit 60 fps but corrupted the
+  intro logos, crowd and loading screen; skipping depth-only broke lighting, drum kit and crowd.
+  The game needs the data, so skipping is not the way.
+- `execute_unclipped_draw_vs_on_cpu=true` (upstream Xenia default, ReXGlue default false) bounds
+  the EDRAM range of unclipped draws: frames over budget 7.9% → 0.02%, windows < 55 fps
+  22% → 6.7% (loading only), no glitches. Now a `scripts/run.sh` default.
+- Ghidra was not needed: the cost was in the emulator's EDRAM bookkeeping, not in game content.

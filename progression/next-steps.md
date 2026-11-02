@@ -2,38 +2,28 @@
 
 ## >>> START HERE: top priority for the next session <<<
 
-**Build the ReXGlue SDK from source to fix presentation under FIFO (KI-14).** Everything the
-host app can change has been tried (see KI-14 "Tested on 2026-11-02 without gain"). Songs run at
-~59 fps, but two scenes stay slow: the pre-song venue fly-through (pure GPU limit) and the
-sunflower field with the crowd (~40 fps). In the sunflower scene the GPU idles ~15% under FIFO
-because the SDK paints from the UI thread behind the game's GPU work; MAILBOX (GPU thread
-presents) reaches ~47-58 fps there but loses frame pacing. The functions that choose the paint
-mode are internal to `librexruntime`, so the fix needs a rebuilt SDK.
+**60 fps in the two heavy scenes is a GPU-cost problem, not a presentation problem (KI-14).**
+The SDK is now built from source (`scripts/build_sdk.sh` applies `patches/rexglue-sdk/*.patch`
+and drops `librexruntime.so` into `build/sdk-lib/`, which `scripts/run.sh` prefers). Tested on
+2026-11-02 without gain: GPU-thread presentation under FIFO, 4-5 swapchain images, anisotropic
+override off. The sunflower field needs ~21 ms of GPU per frame, the venue fly-through ~27 ms,
+on a Vega 6 iGPU already at its 1500 MHz top clock.
 
-1. **Build the SDK** (`third_party/rexglue-sdk`) with the same toolchain flags, `-j2`, `nice`,
-   check peak RAM first (8 GB machine). Point `CMAKE_PREFIX_PATH` at the new install and confirm
-   the game still runs identically before changing anything.
-2. **Presenter change:** let the guest output (GPU command) thread present even with a FIFO
-   swapchain (`Presenter::GetDesiredPaintModeFromUIThread`, `src/ui/presenter.cpp`), so the
-   vsync wait happens in that thread and replaces `--present_pacing`; or keep MAILBOX and pace on
-   real display timing with `VK_KHR_present_wait` (check RADV/Wayland support). Measure the
-   sunflower scene: target is GPU ~99% busy with no dropped frames.
-3. **Then GPU cost:** with a debug-marker build, look at the small draws that take 0.7-1.5 ms on
-   the FSI path (shadow-map passes) for barriers/stalls in the Vulkan command processor.
-4. Smaller items: the SDK audio worker polls `WaitMultiple` at ~80% of a core (shares the APU
-   power budget); the venue fly-through is GPU-bound at 99%.
+Options, by expected payoff:
+1. **Find what the GPU time is** with a real profiler: Radeon GPU Profiler traces from RADV
+   (`MESA_VK_TRACE=rgp`, RGP GUI from AMD) show per-draw duration, barriers and idle gaps, which
+   RenderDoc timestamps could not (small shadow-map draws at 0.7-1.5 ms each on the FSI path look
+   like stalls). Then patch the Vulkan command processor / FSI path in the SDK.
+2. **Fill the FIFO gap in the sunflower scene** (GPU 84% → ~99%, ~40 → ~47 fps at best): MAILBOX
+   with pacing on real display timing (`VK_KHR_present_wait`), so the GPU thread never blocks
+   in acquire. Does not help the fly-through (already 99%).
+3. Accept the current state: ~59 fps in most of a song, ~37-40 fps in the two heavy scenes.
 
-If building the SDK is not wanted, the alternative is accepting the current state (FIFO + pacing +
-FSI defaults; optionally MAILBOX for slightly higher fps in heavy scenes at the cost of pacing).
-
-**How to measure** (every change, on AC power, same song):
-- `scripts/run.sh --perf_log=true --hitch_log_ms=35`: per 2 s guest fps, swap histogram,
-  presenter refreshed/painted/new/dropped, pacing timeouts, GPU busy/clock/temperature/PPT.
-  Compare song segments with the summary script approach used on 2026-11-02 (mean shown fps,
-  share of windows < 55 fps). No `--show_fps`/F3/F4 while measuring.
-- `amdgpu_top -J -s 250` in the background records per-block GPU counters (installed).
-- The intro is **not** a valid GPU benchmark (a Bink movie; flags that matter in gameplay do
-  nothing there). Gameplay runs need the user; announce automated runs ("don't touch").
+**How to measure** (every change, on AC power, same song): `RUN_LOG=build/runX.log
+scripts/run.sh --perf_log=true --hitch_log_ms=35` (one log per run); `--perf_log` now also
+reports paint-path waits (submission/acquire/present) when the patched runtime is loaded.
+No `--show_fps`/F3/F4 while measuring. The intro is **not** a valid GPU benchmark. Gameplay runs
+need the user; announce automated runs ("don't touch").
 
 ---
 

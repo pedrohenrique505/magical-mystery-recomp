@@ -93,12 +93,20 @@ struct Histogram {
 struct PresentStats {
   std::mutex mutex;
   uint32_t refreshes = 0;   // images written into the mailbox
-  uint32_t paints = 0;      // UI thread paints that consumed the mailbox
+  uint32_t paints = 0;      // paints that consumed the mailbox
+  uint32_t guest_thread_paints = 0;  // of those, painted by the GPU command thread itself
   uint32_t new_frames = 0;  // paints that found a newer image than the last paint
   uint32_t last_index = UINT32_MAX;
   Histogram refresh_intervals;
   Histogram new_frame_intervals;
 };
+
+// With --host_present_vsync_from_guest_output_thread (patched SDK, or MAILBOX), the
+// GPU command thread paints inside the SDK's RefreshGuestOutput, i.e. before the
+// refresh hook below has counted that frame. The paint notification for pacing is
+// deferred until after the refresh is counted so the two counters never cross.
+thread_local bool t_in_refresh = false;
+thread_local bool t_deferred_new_paint = false;
 
 PresentStats& Stats() {
   static PresentStats stats;
@@ -157,12 +165,24 @@ std::string PresentStatsLine() {
   PresentStats& s = Stats();
   std::lock_guard<std::mutex> guard(s.mutex);
   std::string line = fmt::format(
-      "host: {} refreshed, {} painted, {} new ({} dropped); new-frame intervals "
-      "<10/10-23/23-40/40+ ms: {}; refresh intervals: {}",
-      s.refreshes, s.paints, s.new_frames,
+      "host: {} refreshed, {} painted ({} by GPU thread), {} new ({} dropped); new-frame "
+      "intervals <10/10-23/23-40/40+ ms: {}; refresh intervals: {}",
+      s.refreshes, s.paints, s.guest_thread_paints, s.new_frames,
       s.refreshes > s.new_frames ? s.refreshes - s.new_frames : 0, s.new_frame_intervals.Take(),
       s.refresh_intervals.Take());
-  s.refreshes = s.paints = s.new_frames = 0;
+  s.refreshes = s.paints = s.guest_thread_paints = s.new_frames = 0;
+  // Blocking time in the SDK's Vulkan paint path; only exported by the patched SDK
+  // (patches/rexglue-sdk/0002, scripts/build_sdk.sh), looked up at runtime.
+  using TakeWaitStats = void (*)(uint64_t*);
+  static const auto take_wait_stats = reinterpret_cast<TakeWaitStats>(
+      dlsym(RTLD_DEFAULT, "rex_presenter_take_wait_stats"));
+  if (take_wait_stats) {
+    uint64_t w[4];
+    take_wait_stats(w);
+    line += fmt::format("; paint waits ({} paints): submission {:.1f} ms, acquire {:.1f} ms, "
+                        "present {:.1f} ms",
+                        w[0], w[1] / 1e6, w[2] / 1e6, w[3] / 1e6);
+  }
   if (REXCVAR_GET(present_pacing)) {
     Pacing& p = Pace();
     std::lock_guard<std::mutex> pace_guard(p.mutex);
@@ -212,9 +232,11 @@ bool Presenter::RefreshGuestOutput(uint32_t frontbuffer_width, uint32_t frontbuf
   static const Fn sdk_impl = ResolveSdkMember<Fn>(
       "_ZN3rex2ui9Presenter18RefreshGuestOutputEjjjjSt8functionIFbRNS1_"
       "25GuestOutputRefreshContextEEE");
+  t_in_refresh = true;
   const bool refreshed = (this->*sdk_impl)(frontbuffer_width, frontbuffer_height,
                                            display_aspect_ratio_x, display_aspect_ratio_y,
                                            std::move(refresher));
+  t_in_refresh = false;
   if (refreshed) {
     PresentStats& s = Stats();
     std::lock_guard<std::mutex> guard(s.mutex);
@@ -222,6 +244,10 @@ bool Presenter::RefreshGuestOutput(uint32_t frontbuffer_width, uint32_t frontbuf
     s.refresh_intervals.Add(Clock::now());
   }
   if (refreshed) NotifyPacing(true);
+  if (t_deferred_new_paint) {
+    t_deferred_new_paint = false;
+    NotifyPacing(false);
+  }
   return refreshed;
 }
 
@@ -242,6 +268,7 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
       PresentStats& s = Stats();
       std::lock_guard<std::mutex> guard(s.mutex);
       ++s.paints;
+      if (t_in_refresh) ++s.guest_thread_paints;
       // The producer never writes into the acquired image, so a different
       // index means a newer image.
       if (index != UINT32_MAX && index != s.last_index) {
@@ -251,7 +278,13 @@ std::unique_lock<std::mutex> Presenter::ConsumeGuestOutput(
       }
       s.last_index = index;
     }
-    if (is_new) NotifyPacing(false);
+    if (is_new) {
+      if (t_in_refresh) {
+        t_deferred_new_paint = true;
+      } else {
+        NotifyPacing(false);
+      }
+    }
   }
   return lock;
 }

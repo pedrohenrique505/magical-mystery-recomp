@@ -1,0 +1,95 @@
+diff --git i/src/ui/vulkan/vulkan_presenter.cpp w/src/ui/vulkan/vulkan_presenter.cpp
+index 23645ef..9ae64fd 100644
+--- i/src/ui/vulkan/vulkan_presenter.cpp
++++ w/src/ui/vulkan/vulkan_presenter.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <chrono>
+ #include <cstddef>
+ #include <cstdint>
+ #include <cmath>
+@@ -58,6 +59,26 @@ REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_mailbox, true, "UI/Vulkan",
+ REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_fifo_relaxed, true, "UI/Vulkan",
+                     "Allow FIFO relaxed present mode");
+ 
++REXCVAR_DEFINE_INT32(vulkan_swapchain_min_images, 0, "UI/Presenter",
++                     "Minimum swapchain image count (0 = SDK default: max(3, surface minimum))")
++    .range(0, 8);
++
++// Beatles recomp patch: time spent blocking in the paint path, for the host app's
++// --perf_log. rex_presenter_take_wait_stats returns and resets the totals
++// {paints, await_ns, acquire_ns, present_ns}.
++namespace {
++std::atomic<uint64_t> g_paint_stats[4];
++uint64_t PaintNowNs() {
++  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                      std::chrono::steady_clock::now().time_since_epoch())
++                      .count());
++}
++}  // namespace
++extern "C" __attribute__((visibility("default"))) void rex_presenter_take_wait_stats(
++    uint64_t out[4]) {
++  for (int i = 0; i < 4; ++i) out[i] = g_paint_stats[i].exchange(0, std::memory_order_relaxed);
++}
++
+ namespace rex {
+ namespace ui {
+ namespace vulkan {
+@@ -987,6 +1008,8 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
+     paint_context_.DestroySwapchainAndVulkanSurface();
+     return SurfacePaintConnectResult::kFailure;
+   }
++  REXLOG_INFO("VulkanPresenter: swapchain has {} images",
++              paint_context_.swapchain_images.size());
+ 
+   // Create the image views and the framebuffers.
+   assert_true(paint_context_.swapchain_framebuffers.empty());
+@@ -1324,6 +1347,11 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+   swapchain_create_info.surface = surface;
+   swapchain_create_info.minImageCount =
+       std::max(kSubmissionCount, surface_capabilities.minImageCount);
++  if (REXCVAR_GET(vulkan_swapchain_min_images) > 0) {
++    swapchain_create_info.minImageCount =
++        std::max(uint32_t(REXCVAR_GET(vulkan_swapchain_min_images)),
++                 surface_capabilities.minImageCount);
++  }
+   if (surface_capabilities.maxImageCount) {
+     swapchain_create_info.minImageCount =
+         std::min(swapchain_create_info.minImageCount, surface_capabilities.maxImageCount);
+@@ -1534,9 +1562,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+   uint64_t current_paint_submission_index =
+       paint_context_.submission_tracker.GetCurrentSubmission();
+   uint64_t paint_submission_count = uint64_t(paint_context_.submissions.size());
++  g_paint_stats[0].fetch_add(1, std::memory_order_relaxed);
+   if (current_paint_submission_index >= paint_submission_count) {
++    const uint64_t await_start = PaintNowNs();
+     paint_context_.submission_tracker.AwaitSubmissionCompletion(current_paint_submission_index -
+                                                                 paint_submission_count);
++    g_paint_stats[1].fetch_add(PaintNowNs() - await_start, std::memory_order_relaxed);
+   }
+   const PaintContext::Submission& paint_submission =
+       *paint_context_.submissions[current_paint_submission_index % paint_submission_count];
+@@ -1569,9 +1600,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+ 
+   VkSemaphore acquire_semaphore = paint_submission.acquire_semaphore();
+   uint32_t swapchain_image_index;
++  const uint64_t acquire_start = PaintNowNs();
+   VkResult acquire_result =
+       dfn.vkAcquireNextImageKHR(device, paint_context_.swapchain, UINT64_MAX, acquire_semaphore,
+                                 VK_NULL_HANDLE, &swapchain_image_index);
++  g_paint_stats[2].fetch_add(PaintNowNs() - acquire_start, std::memory_order_relaxed);
+   switch (acquire_result) {
+     case VK_SUCCESS:
+     case VK_SUBOPTIMAL_KHR:
+@@ -2240,7 +2273,9 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+   {
+     const VulkanDevice::Queue::Acquisition queue_acquisition =
+         vulkan_device_->AcquireQueue(paint_context_.present_queue_family, 0);
++    const uint64_t present_start = PaintNowNs();
+     present_result = dfn.vkQueuePresentKHR(queue_acquisition.queue(), &present_info);
++    g_paint_stats[3].fetch_add(PaintNowNs() - present_start, std::memory_order_relaxed);
+   }
+   switch (present_result) {
+     case VK_SUCCESS:

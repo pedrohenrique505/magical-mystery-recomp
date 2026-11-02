@@ -35,5 +35,15 @@ export REX_VULKAN_ALLOW_PRESENT_MODE_FIFO_RELAXED="${REX_VULKAN_ALLOW_PRESENT_MO
 export REX_PRESENT_PACING="${REX_PRESENT_PACING:-true}"
 export REX_RENDER_TARGET_PATH_VULKAN="${REX_RENDER_TARGET_PATH_VULKAN:-fsi}"
 
-export LD_LIBRARY_PATH="$ROOT/tools/rexglue/linux-amd64/lib:${LD_LIBRARY_PATH:-}"
-exec "$ROOT/build/beatles/beatles" --game_data_root "$ROOT/game" --gpu_plugin xenos --log_file "$ROOT/build/run.log" "$@"
+# Runtime libraries rebuilt from source with patches/rexglue-sdk (scripts/build_sdk.sh)
+# take precedence over the prebuilt SDK when present.
+SDK_LIBS="$ROOT/tools/rexglue/linux-amd64/lib"
+if [ -f "$ROOT/build/sdk-lib/librexruntime.so" ]; then
+  SDK_LIBS="$ROOT/build/sdk-lib:$SDK_LIBS"
+  echo "run.sh: using patched SDK runtime from build/sdk-lib" >&2
+fi
+export LD_LIBRARY_PATH="$SDK_LIBS:${LD_LIBRARY_PATH:-}"
+
+# Log file: RUN_LOG=build/foo.log scripts/run.sh keeps A/B runs apart (the SDK appends).
+RUN_LOG="${RUN_LOG:-$ROOT/build/run.log}"
+exec "$ROOT/build/beatles/beatles" --game_data_root "$ROOT/game" --gpu_plugin xenos --log_file "$RUN_LOG" "$@"

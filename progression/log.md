@@ -87,3 +87,12 @@
 - Forced GPU clock (+1-2 fps), `--no-readback_memexport`, triple-buffered pacing (`--present_pacing_frames=2`, kept as an option) and guest `--vsync=false`: no measurable gain in the two slow scenes (venue fly-through, sunflower field).
 - RenderDoc on the FSI path: transfer rectangles 55% → 19% of GPU time; geometry now dominates, with many tiny draws (shadow-map passes) taking 0.7-1.5 ms each, i.e. stalls.
 - MAILBOX (GPU thread presents) pushes the sunflower scene from GPU 84% / ~40 fps to GPU 99% / ~47-58 fps: under FIFO the SDK paints from the UI thread, behind the game's GPU work. The deciding functions are internal to `librexruntime`, so the next step is building the SDK from source (see `next-steps.md`). User: improvement "almost imperceptible"; session ended here.
+
+## 2026-11-02 (afternoon) — SDK built from source; presentation ruled out
+
+- Built ReXGlue v0.10.0 `librexruntime.so` from source (`scripts/build_sdk.sh`, ~15 min at `-j2`); the executable and the prebuilt xenos plugin need no symbol it lacks, and without the new flags it behaves like the prebuilt one. Patches are versioned in `patches/rexglue-sdk/` (`third_party/` is git-ignored).
+- Patch 0001: `--host_present_vsync_from_guest_output_thread` (GPU command thread presents under FIFO). `present_hooks.cpp` defers the pacing paint notification when the paint happens inside `RefreshGuestOutput`, and counts GPU-thread paints. User A/B/C on "Sgt. Pepper": no change (sunflower 40 fps / GPU 84%, fly-through 37 fps / 99%).
+- Patch 0002: paint-path wait counters (exported `rex_presenter_take_wait_stats`, shown by `--perf_log`) and `--vulkan_swapchain_min_images`. The GPU thread spends ~75% of its time in `vkAcquireNextImageKHR`; more images fix that in the intro but not in gameplay. User D/E (5/4 images): marginal, "nothing changed".
+- `--anisotropic_override=-1/0` (SDK forces 4x by default): no change.
+- `scripts/run.sh` takes `RUN_LOG=...` for one log per run (the SDK appends, so earlier A/B/C logs came out cumulative).
+- Conclusion: the heavy scenes cost 21-27 ms of GPU per frame on a Vega 6 at top clock; 60 fps there needs less GPU work, not better presentation.

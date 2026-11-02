@@ -1,0 +1,29 @@
+diff --git i/src/ui/presenter.cpp w/src/ui/presenter.cpp
+index 7360ed9..390da38 100644
+--- i/src/ui/presenter.cpp
++++ w/src/ui/presenter.cpp
+@@ -29,6 +29,14 @@
+ REXCVAR_DEFINE_BOOL(host_present_from_non_ui_thread, true, "UI/Presenter",
+                     "Allow presentation from non-UI thread");
+ 
++// Beatles recomp patch: with a vsync'd (FIFO) swapchain the presenter normally
++// paints from the UI thread, whose paint submissions queue behind the guest's
++// GPU work and leave the GPU idle between frames. This lets the guest output
++// (GPU command) thread present even then, taking the vsync wait itself.
++REXCVAR_DEFINE_BOOL(host_present_vsync_from_guest_output_thread, false, "UI/Presenter",
++                    "Present from the guest output thread even when the swapchain has "
++                    "implicit vsync (FIFO)");
++
+ REXCVAR_DEFINE_BOOL(present_letterbox, true, "UI/Presenter",
+                     "Enable letterboxing for non-native aspect ratios");
+ 
+@@ -1313,7 +1321,8 @@ Presenter::PaintMode Presenter::GetDesiredPaintModeFromUIThread(bool is_paintabl
+   if (!REXCVAR_GET(host_present_from_non_ui_thread)) {
+     return PaintMode::kUIThreadOnRequest;
+   }
+-  if (surface_paint_connection_has_implicit_vsync_) {
++  if (surface_paint_connection_has_implicit_vsync_ &&
++      !REXCVAR_GET(host_present_vsync_from_guest_output_thread)) {
+     // Don't be causing host vertical sync CPU waits in the thread generating
+     // the guest output.
+     return PaintMode::kUIThreadOnRequest;

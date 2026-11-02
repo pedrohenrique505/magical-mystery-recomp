@@ -30,10 +30,14 @@
 // swap, blocks the guest until the previous frame has been painted, so the
 // guest is never more than one frame ahead of the screen and settles onto the
 // display's vsync. Frames that never reach the mailbox or are never painted
-// are absorbed by resynchronizing on timeout.
+// are absorbed by resynchronizing on timeout. --present_pacing_frames=2 lets
+// the guest run one more frame ahead (triple buffering): when the GPU needs a
+// bit more than one refresh per frame, it then never idles waiting for vsync,
+// at the cost of one frame of latency.
 
 #include <dlfcn.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -55,6 +59,10 @@
 REXCVAR_DEFINE_BOOL(present_pacing, false, "Debug",
                     "Block VdSwap until the previous guest frame was painted, locking the guest "
                     "frame rate to the display refresh");
+REXCVAR_DEFINE_INT32(present_pacing_frames, 1, "Debug",
+                     "With --present_pacing, how many guest frames may be waiting to be painted "
+                     "(1 = double buffering, lowest latency; 2 = triple buffering, keeps the GPU "
+                     "busy when frames miss vsync)");
 
 namespace {
 
@@ -180,13 +188,17 @@ void PacePresent() {
   // Counts can only be negative if an earlier resync overshot; undo that part.
   if (pending_refresh() < 0) p.refresh_offset += pending_refresh();
   if (pending_paint() < 0) p.paint_offset += pending_paint();
+  static const int64_t allowed = std::max(1, REXCVAR_GET(present_pacing_frames)) - 1;
   const bool done = p.cv.wait_for(lock, std::chrono::milliseconds(50), [&] {
-    return pending_refresh() <= 0 && pending_paint() <= 0;
+    return pending_refresh() + pending_paint() <= allowed;
   });
   if (!done) {
+    // Absorb frames that will never be refreshed/painted, keeping `allowed` in flight.
     ++p.timeouts;
-    if (pending_refresh() > 0) p.refresh_offset += pending_refresh();
-    if (pending_paint() > 0) p.paint_offset += pending_paint();
+    int64_t excess = pending_refresh() + pending_paint() - allowed;
+    const int64_t from_paint = std::min(excess, std::max<int64_t>(0, pending_paint()));
+    p.paint_offset += from_paint;
+    p.refresh_offset += excess - from_paint;
   }
 }
 

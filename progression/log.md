@@ -64,3 +64,11 @@
 - User report: audio crackled and felt slowed down during songs. Ruled out one by one with data: audio submit rate (187.5/s, real-time), silence/starvation (none), clipping (none), pitch (normal spectrum), SDK output path (screen-capture audio matched the dump with zero drift), blocking waits and file reads (normal). The dump finally showed ~14% of frames were stale copies from two frames earlier: SDL pulled 4 frames per callback, so the game's XAudio callback ran in bursts its mixer could not follow (KI-13).
 - Fix: `SDL_AUDIO_DEVICE_SAMPLE_FRAMES=256` in `scripts/run.sh`. Stale frames 14% → 0%; user: "the audio is perfect".
 - A 60 fps screen capture shows only ~30 distinct frames per second in gameplay (60 in menus): next target (KI-14).
+
+## 2026-11-01 — Gameplay frame pacing: presenter no longer drops frames
+
+- Added host-side presentation counters (`project/src/present_hooks.cpp`): it preempts the SDK's non-virtual `Presenter::RefreshGuestOutput` and `Presenter::ConsumeGuestOutput` (reached through the GOT, so an executable definition wins) and adds refreshed/painted/new/dropped counts and interval histograms to each `--perf_log` line. The guest swap-interval histogram was added there too.
+- Gameplay run (user): the guest refreshed ~60 frames/s into the mailbox, but the UI thread painted only 25-40 times per second, so 30-60 of every 120 frames were dropped: the ~30 distinct fps of KI-14. In menus the same thread painted 150-2000 times per second (IMMEDIATE present mode).
+- Cause: the SDK always creates an ImGui achievement toast; any UI drawer makes the presenter paint from the UI thread, and those paints queue behind the game's GPU work with 3 submissions in flight. Fix: `CreateAchievementNotificationDialog` returns `nullptr`, so the GPU command thread presents each frame itself. Gameplay: painted = refreshed, 0 dropped; intro GPU busy 93% → 77%. User: "much better visually, still some frame drops".
+- Remaining: guest-side hitches (one 40-150 ms swap every 2-6 s), not correlated with pipeline creation. Next session starts there.
+- Gotcha found on the way: SDK boolean flags parse `--name false` as *true* (CLI11 flag plus a positional); use `--no-name`. Documented in `AGENTS.md`.

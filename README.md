@@ -58,8 +58,8 @@ The run log is written to `build/run.log`.
 ### Performance and debugging options
 
 ```bash
-scripts/run.sh --show_fps true      # guest frame rate in the top-left corner (F3: SDK debug overlay)
-scripts/run.sh --perf_log true      # every 2 s: guest fps, audio frames/s and submit pacing
+scripts/run.sh --show_fps true      # guest frame rate in the top-left corner (F3: SDK debug overlay); overlays cost frames, see KI-14
+scripts/run.sh --perf_log true      # every 2 s: guest fps, audio pacing, host frames painted/dropped
 scripts/run.sh --wait_profile true  # every 2 s: per-thread time spent in kernel waits and file reads
 scripts/run.sh --audio_dump build/audio.raw   # raw audio frames; see scripts/analyze_audio_dump.py
 scripts/profile.sh                  # perf record + host GPU load, writes build/perf.data

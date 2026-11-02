@@ -2,30 +2,36 @@
 
 ## >>> START HERE: top priority for the next session <<<
 
-**Gameplay video frame pacing (KI-14).** The guest swaps at a steady 60 fps and gameplay audio is
-now clean (KI-13), but a 60 fps screen capture of gameplay shows only **~30 distinct frames per
-second** plus small drops (menus: ~60). The host GPU (Radeon Renoir iGPU, already at its max
-1500 MHz) is ~90% busy in gameplay. Plan, in order:
+**Gameplay hitches (KI-14, second half).** The presenter no longer drops frames: since the
+achievement toast was disabled, every guest frame is painted (`--perf_log`: painted = refreshed,
+0 dropped). What is left happens *in the guest*: one `VdSwap` interval of 40-60 ms (up to 150 ms)
+every 2-6 s, plus short stretches of 23-40 ms frames. They do not line up with pipeline creation.
+Plan, in order:
 
-1. **Find where the GPU time goes.** Toggle SDK GPU options one at a time and measure each run
-   the same way (see "How to measure" below). Candidates: `--direct_host_resolve`,
-   `--readback_memexport false`, `--async_shader_compilation`, `--present_effect`,
-   `--resolution_scale`, `--texture_cache_memory_limit_*`, `--vsync false`. Read
-   `third_party/rexglue-sdk/src/graphics/vulkan/` (`command_processor.cpp` `IssueSwap`,
-   `render_target_cache.cpp`) and `src/ui/presenter.cpp` (guest output mailbox) to see how
-   frames are dropped when the GPU is late.
-2. **Profile the GPU side**, not only the CPU: `perf` (`scripts/profile.sh`) only shows CPU.
-   Consider RenderDoc (the SDK has `renderdoc_api.h`) or `RADV_DEBUG`/`radeontop` to see whether
-   resolves, EDRAM transfers, texture uploads or the presenter dominate.
-3. **Cheap CPU win, independent of the above:** the SDK audio worker burns ~80% of a core polling
-   in `PosixConditionBase::WaitMultiple` (1 ms alertable slices + trylock). Not the bottleneck,
-   but wasted CPU on a 6-core laptop.
-4. Later: `-O2` for the generated code (currently `-O1` because of the 8 GB RAM limit) only if
-   the guest CPU ever becomes the bottleneck; today the main thread spends ~75% of its time
-   waiting for the GPU.
+1. **Timestamp each hitch.** Log every swap interval > 30 ms with a timestamp (perf_hooks.cpp)
+   and correlate with `--wait_profile` (file reads, kernel waits per guest thread), the SDK
+   command processor's waits for GPU submissions, and texture uploads. Find out whether the main
+   thread was blocked (I/O, a lock, the GPU) or busy.
+2. **Reduce GPU load** if the hitches turn out to be GPU waits: the iGPU is still the busiest part.
+   Options to A/B (remember `--no-name` to turn a boolean off): `--direct_host_resolve`,
+   `--no-readback_memexport`, `--async_shader_compilation`, `--resolution_scale`,
+   `--texture_cache_memory_limit_*`, `--present_effect`. Consider RenderDoc
+   (`renderdoc_api.h` in the SDK) to see what dominates a gameplay frame.
+3. **Present pacing:** the swapchain uses IMMEDIATE (tearing allowed, no vsync). Try FIFO
+   (`--no-vulkan_allow_present_mode_immediate --no-vulkan_allow_present_mode_mailbox
+   --no-vulkan_allow_present_mode_fifo_relaxed`); FIFO counts as implicit vsync, which moves
+   painting back to the UI thread, so check the dropped counter.
+4. **Cheap CPU win:** the SDK audio worker burns ~80% of a core polling in
+   `PosixConditionBase::WaitMultiple` (1 ms alertable slices + trylock).
+5. Later: `-O2` for the generated code only if the guest CPU becomes the bottleneck.
 
 **How to measure** (every change, before and after):
-- `scripts/run.sh --show_fps true --perf_log true` — guest fps on screen and in `build/run.log`.
+- `scripts/run.sh --perf_log true` — every 2 s: guest fps and swap-interval histogram, audio
+  pacing, and the host side (`refreshed / painted / new / dropped`, new-frame intervals).
+  At a clean 60 fps everything is in the `10-23` bucket. **Do not use `--show_fps` or F3/F4
+  while measuring**: ImGui overlays switch the presenter back to UI-thread painting.
+- The game window must be visible: Hyprland throttles hidden windows, which skews present
+  numbers (an intro-only run without user input is fine if the window is on screen).
 - Distinct frames that actually reach the screen: record gameplay with
   `gpu-screen-recorder -w eDP-1 -f 60 -fm cfr -k h264 -o build/capture.mp4`, then count unique
   frames per second with `ffmpeg -i build/capture.mp4 -vf "scale=480:-1,mpdecimate=hi=64*4:lo=64*2:frac=0.1,showinfo" -an -f null -`
@@ -45,7 +51,8 @@ Suggested order, from cheapest/most informative to most expensive.
 
 - [x] Song list after creating a party (KI-12, `XNetRandom`). A full song plays.
 - [x] Gameplay audio crackling / slow-motion feel: SDL pulled 4 frames per callback, fixed with `SDL_AUDIO_DEVICE_SAMPLE_FRAMES=256` (KI-13).
-- [ ] **Gameplay video frame pacing (top priority, KI-14):** see "START HERE" at the top of this file.
+- [x] Gameplay showed ~30 distinct fps: the presenter dropped half the frames because the SDK's achievement toast forced UI-thread painting (KI-14).
+- [ ] **Gameplay hitches (top priority, KI-14):** see "START HERE" at the top of this file.
 - [ ] Remove or gate the `--debug_probe` watch list once it is no longer needed (it only reads memory and is off by default).
 
 ## 2. Stability of the recompiled code

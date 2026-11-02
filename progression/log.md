@@ -96,3 +96,10 @@
 - `--anisotropic_override=-1/0` (SDK forces 4x by default): no change.
 - `scripts/run.sh` takes `RUN_LOG=...` for one log per run (the SDK appends, so earlier A/B/C logs came out cumulative).
 - Conclusion: the heavy scenes cost 21-27 ms of GPU per frame on a Vega 6 at top clock; 60 fps there needs less GPU work, not better presentation.
+
+## 2026-11-02 (evening) — RGP on Vega, host render targets back, half-rate venue
+
+- RGP: `scripts/rgp_capture.sh` (RADV `MESA_VK_TRACE=rgp` + trigger file; `--rgp_slow_frames N` in `gpu_capture.cpp` requests a trace when at least a third of the last 30 guest frames were slow). RGP 2.7 shows "no events" for GCN; RGP 1.14.1 (last with GCN support, `build/tools/rgp-1.14.1`) works. The queue-event chunk of the `.rgp` file gives per-submission GPU times without the GUI (light frames 11-16 ms, heavy 28 ms).
+- Heavy frame on FSI: one render pass (main scene) 17.4 ms of pixel-shader work; FSI loses early-Z, so overdraw is expensive. Host render targets (`fbo`): windows below 55 fps 42% → 15%, fly-through 37 → 60 fps. `fbo` is the default again.
+- User: "never really 60, feels like 40-45". Screen capture at 60 fps: 30-45 distinct frames/s. A per-region difference map showed alternating frames where only the note highway changes: the game renders the venue at half rate (very likely by design; RB2/RB3 Deluxe mods add "60 fps venues").
+- New: `scripts/count_distinct_frames.py` (distinct frames per second in a CFR capture).

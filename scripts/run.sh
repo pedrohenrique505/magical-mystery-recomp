@@ -26,14 +26,15 @@ export SDL_AUDIO_DEVICE_SAMPLE_FRAMES="${SDL_AUDIO_DEVICE_SAMPLE_FRAMES:-256}"
 # - present_pacing: VdSwap waits until the previous frame was painted, locking the guest
 #   to the display refresh; without it FIFO drops/repeats frames as the SDK's free-running
 #   60 Hz vblank timer drifts against the display, and halves to 30 fps when the GPU is late.
-# - FSI render-target path: EDRAM emulated in a storage buffer with fragment shader
-#   interlock; removes the render-target ownership transfers (full-screen copy draws) that
-#   took 55% of GPU time in gameplay on the host-render-target path.
+# - Render-target path: host render targets ("fbo", the SDK default). The FSI path
+#   (--render_target_path_vulkan=fsi) avoids the EDRAM ownership-transfer draws but does
+#   depth/blending in the pixel shader without early-Z, which tripled the main scene pass
+#   in the heavy song scenes (RGP, 2026-11-02); fbo is faster there (KI-14).
 export REX_VULKAN_ALLOW_PRESENT_MODE_IMMEDIATE="${REX_VULKAN_ALLOW_PRESENT_MODE_IMMEDIATE:-false}"
 export REX_VULKAN_ALLOW_PRESENT_MODE_MAILBOX="${REX_VULKAN_ALLOW_PRESENT_MODE_MAILBOX:-false}"
 export REX_VULKAN_ALLOW_PRESENT_MODE_FIFO_RELAXED="${REX_VULKAN_ALLOW_PRESENT_MODE_FIFO_RELAXED:-false}"
 export REX_PRESENT_PACING="${REX_PRESENT_PACING:-true}"
-export REX_RENDER_TARGET_PATH_VULKAN="${REX_RENDER_TARGET_PATH_VULKAN:-fsi}"
+export REX_RENDER_TARGET_PATH_VULKAN="${REX_RENDER_TARGET_PATH_VULKAN:-fbo}"
 
 # Runtime libraries rebuilt from source with patches/rexglue-sdk (scripts/build_sdk.sh)
 # take precedence over the prebuilt SDK when present.

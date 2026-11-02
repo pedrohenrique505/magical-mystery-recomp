@@ -2,28 +2,27 @@
 
 ## >>> START HERE: top priority for the next session <<<
 
-**60 fps in the two heavy scenes is a GPU-cost problem, not a presentation problem (KI-14).**
-The SDK is now built from source (`scripts/build_sdk.sh` applies `patches/rexglue-sdk/*.patch`
-and drops `librexruntime.so` into `build/sdk-lib/`, which `scripts/run.sh` prefers). Tested on
-2026-11-02 without gain: GPU-thread presentation under FIFO, 4-5 swapchain images, anisotropic
-override off. The sunflower field needs ~21 ms of GPU per frame, the venue fly-through ~27 ms,
-on a Vega 6 iGPU already at its 1500 MHz top clock.
+**Gameplay runs at ~58 fps with host render targets (now the default); the "40-45 fps feel"
+is the game's half-rate venue (KI-14).** A screen capture shows the 3D venue redrawn every
+other frame and only the note highway every frame, matching the heavy/light GPU frames seen in
+RGP. Decide with the user:
 
-Options, by expected payoff:
-1. **Find what the GPU time is** with a real profiler: Radeon GPU Profiler traces from RADV
-   (`MESA_VK_TRACE=rgp`, RGP GUI from AMD) show per-draw duration, barriers and idle gaps, which
-   RenderDoc timestamps could not (small shadow-map draws at 0.7-1.5 ms each on the FSI path look
-   like stalls). Then patch the Vulkan command processor / FSI path in the SDK.
-2. **Fill the FIFO gap in the sunflower scene** (GPU 84% → ~99%, ~40 → ~47 fps at best): MAILBOX
-   with pacing on real display timing (`VK_KHR_present_wait`), so the GPU thread never blocks
-   in acquire. Does not help the fly-through (already 99%).
-3. Accept the current state: ~59 fps in most of a song, ~37-40 fps in the two heavy scenes.
+1. **Force the venue to full rate**, as the RB2/RB3 "Deluxe" mods do ("60 fps venues"): find
+   the engine switch (RB2 symbol dump `third_party/rb3/doc/rb2_dump/`, Ghidra; look at how
+   the world/venue draw is skipped on alternate frames) and patch it from the host app. GPU
+   cost roughly doubles for the venue: measure whether the Vega 6 can hold 60 (heavy frames
+   are the limit; on fbo the GPU averaged ~80% busy at 58 fps with half-rate venue).
+2. Remaining dips (40-46 fps in a short stretch on fbo): profile with `scripts/rgp_capture.sh`
+   on the fbo path; candidates are the per-draw shared-memory uploads (barrier +
+   `vkCmdCopyBuffer` before small draws, `VulkanSharedMemory::UploadRanges`).
 
-**How to measure** (every change, on AC power, same song): `RUN_LOG=build/runX.log
-scripts/run.sh --perf_log=true --hitch_log_ms=35` (one log per run); `--perf_log` now also
-reports paint-path waits (submission/acquire/present) when the patched runtime is loaded.
-No `--show_fps`/F3/F4 while measuring. The intro is **not** a valid GPU benchmark. Gameplay runs
-need the user; announce automated runs ("don't touch").
+**How to measure:** `RUN_LOG=build/runX.log scripts/run.sh --perf_log=true --hitch_log_ms=35`
+for guest fps / GPU; for what the screen really shows, record with
+`gpu-screen-recorder -w eDP-1 -f 60 -fm cfr -k h264 -q ultra -cursor no -s 960x540 -o build/capX.mp4`
+and run `scripts/count_distinct_frames.py build/capX.mp4` (in the background; the per-cell
+difference map in `progression/log.md` 2026-11-02 explains how highway-only frames were found).
+GPU profiles: `scripts/rgp_capture.sh N` (auto-captures sustained slow stretches,
+`touch build/rgp_trigger` for a manual one), open with RGP 1.14.1. Gameplay runs need the user.
 
 ---
 

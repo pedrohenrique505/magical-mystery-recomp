@@ -10,7 +10,7 @@
 // Outputs (all fed by the same counter, refreshed every 0.5 s):
 //   --show_fps true   small always-on overlay in the top-left corner;
 //   F3                the SDK debug overlay ("Guest: N FPS"), via SetGuestFrameStats;
-//   --perf_log true   a log line every 2 s:
+//   --perf_log true   a log line every 2 s (also host GPU busy % and clock, amdgpu sysfs):
 //                     perf: 23.5 fps (47 swaps in 2.00 s), worst frame 61.2 ms, audio 187.5 frames/s
 //
 // The audio rate counts XAudioSubmitRenderDriverFrame calls. Each frame is 256
@@ -28,10 +28,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 
+#include <fmt/format.h>
 #include <imgui.h>
 
 #include <rex/cvar.h>
@@ -51,6 +54,11 @@ REXCVAR_DEFINE_BOOL(show_fps, false, "Debug",
 
 // present_hooks.cpp: host mailbox/paint counters, reset on each call.
 std::string PresentStatsLine();
+// gpu_capture.cpp: RenderDoc captures of slow frames (--capture_slow_frames).
+void GpuCaptureOnSwap(double frame_ms);
+// hitch_tracer.cpp
+void HitchOnSwap(std::chrono::steady_clock::time_point prev,
+                 std::chrono::steady_clock::time_point now, double prev_call_ms);
 
 namespace {
 
@@ -80,6 +88,131 @@ struct Window {
     return true;
   }
 };
+
+// Host GPU load (amdgpu sysfs), sampled every 50 ms by a background thread
+// while --perf_log is on; the perf line reports and resets the window.
+struct GpuSampler {
+  std::mutex mutex;
+  uint32_t samples = 0, busy_sum = 0, busy_max = 0, saturated = 0;  // saturated: >= 95%
+  uint64_t sclk_sum = 0;
+  uint32_t sclk_samples = 0, sclk_min = 0;
+  int temp_max_mc = 0;      // hwmon temp1 (edge), millidegrees C
+  uint64_t ppt_sum_uw = 0;  // hwmon power1 (APU package power, CPU + GPU), microwatts
+  uint64_t ppt_max_uw = 0;
+  uint32_t ppt_samples = 0;
+};
+
+// Reads one integer from a sysfs file; returns false if unreadable.
+bool ReadSysInt(const std::string& path, long long& value) {
+  FILE* f = path.empty() ? nullptr : std::fopen(path.c_str(), "r");
+  if (!f) return false;
+  const bool ok = std::fscanf(f, "%lld", &value) == 1;
+  std::fclose(f);
+  return ok;
+}
+
+// Returns <device>/hwmon/hwmonN/<file> for the first hwmon of the GPU device.
+std::string FindHwmonFile(const std::string& device_file, const char* file) {
+  const std::string dir = device_file.substr(0, device_file.rfind('/')) + "/hwmon/";
+  for (int i = 0; i < 16; ++i) {
+    std::string path = dir + "hwmon" + std::to_string(i) + "/" + file;
+    if (FILE* f = std::fopen(path.c_str(), "r")) {
+      std::fclose(f);
+      return path;
+    }
+  }
+  return {};
+}
+
+GpuSampler& Gpu() {
+  static GpuSampler g;
+  return g;
+}
+
+// Returns the first readable /sys/class/drm/cardN/device/<file>, or "".
+std::string FindDrmFile(const char* file) {
+  for (int i = 0; i < 8; ++i) {
+    std::string path = "/sys/class/drm/card" + std::to_string(i) + "/device/" + file;
+    if (FILE* f = std::fopen(path.c_str(), "r")) {
+      std::fclose(f);
+      return path;
+    }
+  }
+  return {};
+}
+
+void StartGpuSampler() {
+  const std::string busy_path = FindDrmFile("gpu_busy_percent");
+  if (busy_path.empty()) return;
+  const std::string sclk_path = FindDrmFile("pp_dpm_sclk");
+  const std::string temp_path = FindHwmonFile(busy_path, "temp1_input");
+  const std::string ppt_path = FindHwmonFile(busy_path, "power1_input");
+  std::thread([busy_path, sclk_path, temp_path, ppt_path] {
+    char line[128];
+    for (;;) {
+      int busy = -1;
+      if (FILE* f = std::fopen(busy_path.c_str(), "r")) {
+        if (std::fscanf(f, "%d", &busy) != 1) busy = -1;
+        std::fclose(f);
+      }
+      // pp_dpm_sclk lists the DPM levels; the active one ends with '*'.
+      int sclk = -1;
+      if (FILE* f = sclk_path.empty() ? nullptr : std::fopen(sclk_path.c_str(), "r")) {
+        while (std::fgets(line, sizeof(line), f)) {
+          int level, mhz;
+          if (std::strchr(line, '*') && std::sscanf(line, "%d: %dMhz", &level, &mhz) == 2) {
+            sclk = mhz;
+          }
+        }
+        std::fclose(f);
+      }
+      long long temp = -1, ppt = -1;
+      ReadSysInt(temp_path, temp);
+      ReadSysInt(ppt_path, ppt);
+      if (busy >= 0) {
+        GpuSampler& g = Gpu();
+        if (temp > g.temp_max_mc) g.temp_max_mc = int(temp);
+        if (ppt >= 0) {
+          g.ppt_sum_uw += ppt;
+          if (uint64_t(ppt) > g.ppt_max_uw) g.ppt_max_uw = ppt;
+          ++g.ppt_samples;
+        }
+        std::lock_guard<std::mutex> guard(g.mutex);
+        ++g.samples;
+        g.busy_sum += busy;
+        if (uint32_t(busy) > g.busy_max) g.busy_max = busy;
+        if (busy >= 95) ++g.saturated;
+        if (sclk > 0) {
+          g.sclk_sum += sclk;
+          if (!g.sclk_samples || uint32_t(sclk) < g.sclk_min) g.sclk_min = sclk;
+          ++g.sclk_samples;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  }).detach();
+}
+
+std::string GpuStatsLine() {
+  GpuSampler& g = Gpu();
+  std::lock_guard<std::mutex> guard(g.mutex);
+  if (!g.samples) return "gpu: n/a";
+  std::string out = fmt::format("gpu busy avg {}% max {}%, >=95% in {}% of samples", g.busy_sum / g.samples,
+                                g.busy_max, g.saturated * 100 / g.samples);
+  if (g.sclk_samples) {
+    out += fmt::format(", sclk avg {} min {} MHz", g.sclk_sum / g.sclk_samples, g.sclk_min);
+  }
+  if (g.temp_max_mc > 0) out += fmt::format(", edge max {} C", g.temp_max_mc / 1000);
+  if (g.ppt_samples) {
+    out += fmt::format(", ppt avg {:.1f} max {:.1f} W", g.ppt_sum_uw / 1e6 / g.ppt_samples,
+                       g.ppt_max_uw / 1e6);
+  }
+  g.samples = g.busy_sum = g.busy_max = g.saturated = g.sclk_samples = g.sclk_min = 0;
+  g.ppt_samples = 0;
+  g.sclk_sum = g.ppt_sum_uw = g.ppt_max_uw = 0;
+  g.temp_max_mc = 0;
+  return out;
+}
 
 std::atomic<uint64_t> g_audio_frames{0};
 // Audio submit pacing: submits that came less than 1 ms after the previous one
@@ -113,6 +246,7 @@ void CountSwap() {
   ++c.total_swaps;
   if (c.last_swap == Clock::time_point{}) {
     c.last_swap = c.display.start = c.log.start = now;
+    if (REXCVAR_GET(perf_log)) StartGpuSampler();
     return;
   }
   const double frame_ms = std::chrono::duration<double, std::milli>(now - c.last_swap).count();
@@ -135,9 +269,9 @@ void CountSwap() {
     REXLOG_INFO(
         "perf: {:.1f} fps ({} swaps in {:.2f} s), worst frame {:.1f} ms, audio {:.1f} frames/s "
         "({} back-to-back, max gap {:.1f} ms); swap intervals <10/10-23/23-40/40+ ms: "
-        "{}/{}/{}/{}; {}",
+        "{}/{}/{}/{}; {}; {}",
         fps, count, seconds, worst, audio_rate, bursts, max_gap / 1000.0, c.log_buckets[0],
-        c.log_buckets[1], c.log_buckets[2], c.log_buckets[3], PresentStatsLine());
+        c.log_buckets[1], c.log_buckets[2], c.log_buckets[3], PresentStatsLine(), GpuStatsLine());
     for (uint32_t& b : c.log_buckets) b = 0;
   }
 }
@@ -222,8 +356,17 @@ GuestImport ResolveSdk(const char* name) {
 
 REX_EXTERN(__imp__VdSwap) {
   static const GuestImport sdk_impl = ResolveSdk("__imp__VdSwap");
+  static Clock::time_point prev{};
+  static double prev_call_ms = 0.0;
+  const Clock::time_point now = Clock::now();
+  HitchOnSwap(prev, now, prev_call_ms);
+  if (prev != Clock::time_point{}) {
+    GpuCaptureOnSwap(std::chrono::duration<double, std::milli>(now - prev).count());
+  }
+  prev = now;
   CountSwap();
   sdk_impl(ctx, base);
+  prev_call_ms = std::chrono::duration<double, std::milli>(Clock::now() - now).count();
 }
 
 REX_EXTERN(__imp__XAudioSubmitRenderDriverFrame) {

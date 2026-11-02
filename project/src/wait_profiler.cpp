@@ -40,6 +40,11 @@
 REXCVAR_DEFINE_BOOL(wait_profile, false, "Debug",
                     "Every 2 s, log per-thread time spent in kernel waits and file reads");
 
+bool HitchTracerEnabled();
+void HitchRecordWait(const std::string& thread, const char* import,
+                     std::chrono::steady_clock::time_point start,
+                     std::chrono::steady_clock::time_point end, uint64_t bytes);
+
 namespace {
 
 using GuestImport = void (*)(PPCContext&, uint8_t*);
@@ -94,7 +99,20 @@ void Flush(Profiler& p, Clock::time_point now) {
   p.window_start = now;
 }
 
-void Record(const char* import, double ms, double requested_ms, uint64_t bytes) {
+bool ProfileEnabled() {
+  static const bool enabled = REXCVAR_GET(wait_profile);
+  return enabled;
+}
+
+void Record(const char* import, Clock::time_point start, double ms, double requested_ms,
+            uint64_t bytes) {
+  if (HitchTracerEnabled()) {
+    HitchRecordWait(ThreadName(), import, start,
+                    start + std::chrono::duration_cast<Clock::duration>(
+                                std::chrono::duration<double, std::milli>(ms)),
+                    bytes);
+  }
+  if (!ProfileEnabled()) return;
   Profiler& p = Prof();
   const Clock::time_point now = Clock::now();
   std::lock_guard<std::mutex> guard(p.mutex);
@@ -115,8 +133,9 @@ GuestImport Resolve(const char* name) {
   return fn;
 }
 
+// The wrappers also feed the hitch tracer (hitch_tracer.cpp).
 bool Enabled() {
-  static const bool enabled = REXCVAR_GET(wait_profile);
+  static const bool enabled = ProfileEnabled() || HitchTracerEnabled();
   return enabled;
 }
 
@@ -142,7 +161,7 @@ uint64_t LoadBe64(const uint8_t* base, uint32_t addr) {
     sdk_impl(ctx, base);                                               \
     const double ms =                                                  \
         std::chrono::duration<double, std::milli>(Clock::now() - start).count(); \
-    Record(#name, ms, requested_ms, bytes);                            \
+    Record(#name, start, ms, requested_ms, bytes);                            \
   }
 
 // KeDelayExecutionThread(mode r3, alertable r4, LARGE_INTEGER* interval r5);

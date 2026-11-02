@@ -1,0 +1,708 @@
+diff --git i/include/rex/graphics/vulkan/deferred_command_buffer.h w/include/rex/graphics/vulkan/deferred_command_buffer.h
+index 6cf3906..4bcc7f6 100644
+--- i/include/rex/graphics/vulkan/deferred_command_buffer.h
++++ w/include/rex/graphics/vulkan/deferred_command_buffer.h
+@@ -32,10 +32,40 @@ enum class GpuStatSlot : size_t {
+   kSharedMemoryUploadBytes,                   // bytes copied by those calls
+   kSharedMemoryUploadRenderPassEnds,          // uploads that ended an open render pass
+   kSubmissions,                               // DeferredCommandBuffer::Execute calls
++  // beatles patch 0006: per-frame breakdown of what the host GPU work is made of.
++  kGuestDraws,             // VulkanCommandProcessor::IssueDraw calls
++  kResolves,               // resolve copy dispatches (EDRAM -> shared memory)
++  kEdramDumps,             // DumpRenderTargets dispatches (host RT -> EDRAM buffer)
++  kTextureLoads,           // textures (re)loaded from guest memory
++  kTextureLoadDispatches,  // texture load/convert compute dispatches
++  kTextureLoadBytes,       // host bytes written by those dispatches
++  kRtTransferDraws,        // render-target ownership transfer draws
+   kCount,
+ };
+ constexpr size_t kGpuStatSlotCount = size_t(GpuStatSlot::kCount);
+ void GpuStatAdd(GpuStatSlot slot, uint64_t value);
++// Monotonic totals of all slots (beatles patch 0006); writes kGpuStatSlotCount values.
++void GpuStatSnapshot(uint64_t* out);
++
++// GPU time per kind of work (beatles patch 0006, --gpu_frame_csv with categories): timestamp
++// pairs around these commands, summed per frame by the frame timer in command_processor.cpp.
++enum class GpuTimeCategory : uint32_t {
++  kEdramDump,    // DumpRenderTargets dispatches
++  kResolve,      // resolve copy dispatches
++  kTextureLoad,  // texture load/convert dispatches
++  kRtTransfer,   // render-target ownership transfer draws
++  kUpload,       // shared-memory upload copies
++  kCount,
++};
++constexpr uint32_t kGpuTimeCategoryCount = uint32_t(GpuTimeCategory::kCount);
++// Whether CmdBeatlesTimestamp markers should be recorded (cheap; read at record time).
++bool GpuCategoryTimingEnabled();
++// Called by Execute for each marker.
++void GpuCategoryTimestamp(VkCommandBuffer command_buffer, uint32_t category, bool end);
++// Render-target transfer profile: returns an id for a transfer description (GPU command
++// thread only) and counts one draw of `tiles` EDRAM tiles for it. Pass the id as
++// CmdBeatlesTimestamp's `key` so the span's GPU time is added to that description.
++uint32_t GpuTransferProfileKey(const char* description, uint32_t tiles);
+ 
+ class DeferredCommandBuffer {
+  public:
+@@ -365,6 +395,14 @@ class DeferredCommandBuffer {
+     std::memcpy(args_ptr + header_size, viewports, sizeof(VkViewport) * viewport_count);
+   }
+ 
++  // beatles patch 0006: a GPU timestamp marking the start or end of a GpuTimeCategory span.
++  void CmdBeatlesTimestamp(GpuTimeCategory category, bool end, uint32_t key = 0) {
++    auto& args = *reinterpret_cast<ArgsBeatlesTimestamp*>(
++        WriteCommand(Command::kBeatlesTimestamp, sizeof(ArgsBeatlesTimestamp)));
++    args.category = uint32_t(category) | (key << 8);
++    args.end = end ? 1 : 0;
++  }
++
+  private:
+   enum class Command {
+     kVkBeginRenderPass,
+@@ -395,6 +433,7 @@ class DeferredCommandBuffer {
+     kVkSetStencilReference,
+     kVkSetStencilWriteMask,
+     kVkSetViewport,
++    kBeatlesTimestamp,  // beatles patch 0006
+   };
+ 
+   struct CommandHeader {
+@@ -579,6 +618,11 @@ class DeferredCommandBuffer {
+     static_assert(alignof(VkRect2D) <= alignof(uintmax_t));
+   };
+ 
++  struct ArgsBeatlesTimestamp {
++    uint32_t category;
++    uint32_t end;
++  };
++
+   struct ArgsSetStencilMaskReference {
+     VkStencilFaceFlags face_mask;
+     uint32_t mask_reference;
+diff --git i/src/graphics/vulkan/command_processor.cpp w/src/graphics/vulkan/command_processor.cpp
+index 001f36b..4c42868 100644
+--- i/src/graphics/vulkan/command_processor.cpp
++++ w/src/graphics/vulkan/command_processor.cpp
+@@ -11,6 +11,10 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <atomic>
++#include <chrono>
++#include <deque>
++#include <unordered_map>
+ #include <cstdint>
+ #include <cstring>
+ #include <iterator>
+@@ -71,6 +75,350 @@ REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",
+ 
+ namespace rex::graphics::vulkan {
+ 
++// beatles patch 0006: per-frame host GPU timing.
++//
++// When the host app calls rex_gpu_frame_timing_enable(), every submission gets a timestamp
++// at the start and at the end of its command buffer. Once the GPU has finished a frame (all
++// submissions recorded while that guest frame was open), a record with the GPU start/end
++// times, the summed submission time and the per-frame deltas of the GpuStatSlot counters is
++// queued for rex_gpu_take_frame_records(). Presenter paints use the same queue but are not
++// timed, so they show up as the gap between frames.
++namespace beatles_frame_timer {
++
++// Keep in sync with the host app (project/src/gpu_frame_log.cpp).
++struct FrameRecord {
++  uint64_t frame;         // host frame index (VulkanCommandProcessor::frame_current_)
++  uint64_t gpu_start_ns;  // GPU clock, first timed submission of the frame started
++  uint64_t gpu_end_ns;    // GPU clock, last timed submission of the frame ended
++  uint64_t busy_ns;       // sum of the submissions' durations
++  uint64_t cpu_close_ns;  // steady_clock when the CPU closed the frame (0 = unknown)
++  uint32_t submissions;
++  uint32_t stat_count;    // valid entries in stats (kGpuStatSlotCount)
++  uint64_t stats[48];     // per-frame GpuStatSlot deltas
++  uint64_t category_ns[8];  // GPU time per GpuTimeCategory (0 unless category timing is on)
++  uint32_t category_spans[8];
++};
++static_assert(kGpuStatSlotCount <= 48);
++static_assert(kGpuTimeCategoryCount <= 8);
++
++// Each in-flight submission owns a block of queries: [0] start, [1] end, then markers.
++constexpr uint32_t kQuerySlots = 64;  // submissions in flight that can be timed
++constexpr uint32_t kQueriesPerSlot = 2048;
++constexpr uint32_t kFrameRing = 16;    // frames whose counters wait for their GPU times
++constexpr size_t kMaxQueuedRecords = 4096;
++
++struct Marker {
++  uint32_t category;  // GpuTimeCategory | profile key << 8
++  bool end;
++};
++
++// Render-target transfer profile (GpuTransferProfileKey): per description, draws and tiles
++// counted at record time, GPU time added when the spans complete. Logged every
++// kProfileLogFrames frames, then reset.
++constexpr uint64_t kProfileLogFrames = 600;
++struct TransferProfileEntry {
++  std::string description;
++  uint64_t draws = 0;
++  uint64_t tiles = 0;
++  uint64_t ns = 0;
++};
++
++struct Pending {
++  uint64_t submission;
++  uint32_t slot;
++  uint64_t frame;
++  std::vector<Marker> markers;  // query 2 + i
++};
++
++struct State {
++  std::atomic<bool> enabled{false};
++  std::atomic<bool> categories{false};
++  // GPU command thread only.
++  uint32_t current_slot = UINT32_MAX;  // slot of the command buffer being recorded
++  std::vector<Marker> current_markers;
++  bool category_skipping[kGpuTimeCategoryCount] = {};
++  std::vector<uint64_t> results;
++  std::vector<TransferProfileEntry> transfer_profile;  // index = key - 1
++  std::unordered_map<std::string, uint32_t> transfer_profile_index;
++  uint64_t profile_frames = 0;
++  bool init_tried = false;
++  VkDevice device = VK_NULL_HANDLE;
++  VkQueryPool pool = VK_NULL_HANDLE;
++  PFN_vkCmdWriteTimestamp write_timestamp = nullptr;
++  PFN_vkGetQueryPoolResults get_results = nullptr;
++  PFN_vkCmdResetQueryPool reset_pool = nullptr;
++  double period_ns = 1.0;
++  std::deque<Pending> pending;
++  bool agg_open = false;
++  FrameRecord agg{};
++  uint64_t last_snapshot[kGpuStatSlotCount] = {};
++  uint64_t ring_frame[kFrameRing] = {};
++  uint64_t ring_cpu_ns[kFrameRing] = {};
++  uint64_t ring_stats[kFrameRing][kGpuStatSlotCount] = {};
++  bool ring_valid[kFrameRing] = {};
++  // Shared with the reader.
++  std::mutex mutex;
++  std::deque<FrameRecord> records;
++};
++
++State& S() {
++  static State s;
++  return s;
++}
++
++bool Init(const ui::vulkan::VulkanDevice* vulkan_device) {
++  State& s = S();
++  if (s.init_tried) return s.pool != VK_NULL_HANDLE;
++  s.init_tried = true;
++  const auto& ifn = vulkan_device->vulkan_instance()->functions();
++  const auto& dfn = vulkan_device->functions();
++  VkDevice device = vulkan_device->device();
++  s.write_timestamp =
++      PFN_vkCmdWriteTimestamp(ifn.vkGetDeviceProcAddr(device, "vkCmdWriteTimestamp"));
++  s.get_results =
++      PFN_vkGetQueryPoolResults(ifn.vkGetDeviceProcAddr(device, "vkGetQueryPoolResults"));
++  s.reset_pool = dfn.vkCmdResetQueryPool;
++  VkPhysicalDeviceProperties properties;
++  ifn.vkGetPhysicalDeviceProperties(vulkan_device->physical_device(), &properties);
++  s.period_ns = properties.limits.timestampPeriod;
++  if (!s.write_timestamp || !s.get_results || !s.reset_pool || s.period_ns <= 0.0) {
++    REXGPU_WARN("GPU frame timing: timestamp queries unavailable");
++    return false;
++  }
++  VkQueryPoolCreateInfo pool_info = {};
++  pool_info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
++  pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
++  pool_info.queryCount = kQuerySlots * kQueriesPerSlot;
++  if (dfn.vkCreateQueryPool(device, &pool_info, nullptr, &s.pool) != VK_SUCCESS) {
++    s.pool = VK_NULL_HANDLE;
++    REXGPU_WARN("GPU frame timing: failed to create the timestamp query pool");
++    return false;
++  }
++  s.device = device;
++  REXGPU_INFO("GPU frame timing enabled (timestamp period {} ns)", s.period_ns);
++  return true;
++}
++
++// Before the deferred commands of a submission: returns the query slot, or UINT32_MAX.
++uint32_t BeginSubmission(const ui::vulkan::VulkanDevice* vulkan_device, VkCommandBuffer cb,
++                         uint64_t submission) {
++  State& s = S();
++  if (!s.enabled.load(std::memory_order_relaxed) || !Init(vulkan_device)) return UINT32_MAX;
++  if (!s.pending.empty() && submission - s.pending.front().submission >= kQuerySlots) {
++    return UINT32_MAX;  // the GPU is too far behind; leave this one untimed
++  }
++  const uint32_t slot = uint32_t(submission % kQuerySlots);
++  const bool categories = s.categories.load(std::memory_order_relaxed);
++  s.reset_pool(cb, s.pool, slot * kQueriesPerSlot, categories ? kQueriesPerSlot : 2);
++  s.write_timestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, s.pool, slot * kQueriesPerSlot);
++  s.current_slot = categories ? slot : UINT32_MAX;
++  s.current_markers.clear();
++  std::fill(std::begin(s.category_skipping), std::end(s.category_skipping), false);
++  return slot;
++}
++
++// A CmdBeatlesTimestamp marker being executed into `cb`. Both ends of a span use
++// BOTTOM_OF_PIPE, so a span measures the time from all earlier work being done to the
++// marked work being done (the work is already serialized by barriers in most cases).
++void RecordMarker(VkCommandBuffer cb, uint32_t category, bool end) {
++  State& s = S();
++  const uint32_t key = category >> 8;
++  category &= 0xFF;
++  if (s.current_slot == UINT32_MAX || category >= kGpuTimeCategoryCount) return;
++  if (!end && s.current_markers.size() + 2 + 2 > kQueriesPerSlot) {
++    s.category_skipping[category] = true;  // out of queries: drop this span
++    return;
++  }
++  if (end && s.category_skipping[category]) {
++    s.category_skipping[category] = false;
++    return;
++  }
++  const uint32_t query = s.current_slot * kQueriesPerSlot + 2 + uint32_t(s.current_markers.size());
++  s.write_timestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s.pool, query);
++  s.current_markers.push_back({category | (key << 8), end});
++}
++
++void EndSubmission(VkCommandBuffer cb, uint32_t slot) {
++  State& s = S();
++  s.current_slot = UINT32_MAX;
++  if (slot == UINT32_MAX) return;
++  s.write_timestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s.pool, slot * kQueriesPerSlot + 1);
++}
++
++void Submitted(uint32_t slot, uint64_t submission, uint64_t frame) {
++  State& s = S();
++  if (slot == UINT32_MAX) return;
++  s.pending.push_back({submission, slot, frame, std::move(s.current_markers)});
++  s.current_markers.clear();
++}
++
++// The CPU closed `frame`: store its counter deltas until its GPU times are known.
++void FrameClosed(uint64_t frame) {
++  State& s = S();
++  if (!s.enabled.load(std::memory_order_relaxed)) return;
++  uint64_t now[kGpuStatSlotCount];
++  GpuStatSnapshot(now);
++  const uint32_t i = uint32_t(frame % kFrameRing);
++  s.ring_frame[i] = frame;
++  s.ring_valid[i] = true;
++  s.ring_cpu_ns[i] = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                  std::chrono::steady_clock::now().time_since_epoch())
++                                  .count());
++  for (size_t j = 0; j < kGpuStatSlotCount; ++j) {
++    s.ring_stats[i][j] = now[j] - s.last_snapshot[j];
++    s.last_snapshot[j] = now[j];
++  }
++}
++
++void LogTransferProfile(State& s) {
++  std::vector<const TransferProfileEntry*> entries;
++  uint64_t total_ns = 0;
++  for (const TransferProfileEntry& e : s.transfer_profile) {
++    total_ns += e.ns;
++    if (e.draws) entries.push_back(&e);
++  }
++  std::sort(entries.begin(), entries.end(),
++            [](const auto* a, const auto* b) { return a->ns > b->ns; });
++  const double frames = double(s.profile_frames);
++  REXGPU_INFO("transfer profile: {} frames, {:.2f} ms/frame in {} kinds of transfer",
++              s.profile_frames, total_ns / 1e6 / frames, entries.size());
++  for (size_t i = 0; i < entries.size() && i < 20; ++i) {
++    const TransferProfileEntry& e = *entries[i];
++    REXGPU_INFO("transfer profile:   {:6.3f} ms/frame {:6.2f} draws/frame {:8.1f} tiles/frame  {}",
++                e.ns / 1e6 / frames, e.draws / frames, e.tiles / frames, e.description);
++  }
++  for (TransferProfileEntry& e : s.transfer_profile) {
++    e.draws = e.tiles = e.ns = 0;
++  }
++  s.profile_frames = 0;
++}
++
++void Finalize(State& s) {
++  if (!s.agg_open) return;
++  s.agg_open = false;
++  if (s.categories.load(std::memory_order_relaxed) && ++s.profile_frames >= kProfileLogFrames) {
++    LogTransferProfile(s);
++  }
++  const uint32_t i = uint32_t(s.agg.frame % kFrameRing);
++  s.agg.stat_count = uint32_t(kGpuStatSlotCount);
++  if (s.ring_valid[i] && s.ring_frame[i] == s.agg.frame) {
++    s.agg.cpu_close_ns = s.ring_cpu_ns[i];
++    std::memcpy(s.agg.stats, s.ring_stats[i], sizeof(s.ring_stats[i]));
++    s.ring_valid[i] = false;
++  }
++  std::lock_guard<std::mutex> guard(s.mutex);
++  if (s.records.size() >= kMaxQueuedRecords) s.records.pop_front();
++  s.records.push_back(s.agg);
++}
++
++// Reads the timestamps of the submissions the GPU has completed.
++void Collect(uint64_t submission_completed) {
++  State& s = S();
++  while (!s.pending.empty() && s.pending.front().submission <= submission_completed) {
++    const Pending& p = s.pending.front();
++    const uint32_t count = 2 + uint32_t(p.markers.size());
++    s.results.resize(count);
++    const VkResult result =
++        s.get_results(s.device, s.pool, p.slot * kQueriesPerSlot, count,
++                      count * sizeof(uint64_t), s.results.data(), sizeof(uint64_t),
++                      VK_QUERY_RESULT_64_BIT);
++    if (result == VK_NOT_READY) break;
++    const Pending done = std::move(s.pending.front());
++    s.pending.pop_front();
++    if (result != VK_SUCCESS) continue;
++    const uint64_t* ts = s.results.data();
++    const uint64_t start = uint64_t(double(ts[0]) * s.period_ns);
++    const uint64_t end = uint64_t(double(ts[1]) * s.period_ns);
++    // Pair each span start with the next end of the same category.
++    uint64_t category_ns[kGpuTimeCategoryCount] = {};
++    uint32_t category_spans[kGpuTimeCategoryCount] = {};
++    uint64_t open_at[kGpuTimeCategoryCount] = {};
++    bool open[kGpuTimeCategoryCount] = {};
++    for (size_t i = 0; i < done.markers.size(); ++i) {
++      const Marker m = done.markers[i];
++      if (!m.end) {
++        open[m.category & 0xFF] = true;
++        open_at[m.category & 0xFF] = ts[2 + i];
++      } else if (open[m.category & 0xFF]) {
++        const uint32_t c = m.category & 0xFF;
++        open[c] = false;
++        if (ts[2 + i] > open_at[c]) {
++          const uint64_t ns = uint64_t(double(ts[2 + i] - open_at[c]) * s.period_ns);
++          category_ns[c] += ns;
++          const uint32_t key = m.category >> 8;
++          if (key && key <= s.transfer_profile.size()) s.transfer_profile[key - 1].ns += ns;
++        }
++        ++category_spans[c];
++      }
++    }
++    const Pending& p2 = done;
++    if (s.agg_open && p2.frame != s.agg.frame) Finalize(s);
++    if (!s.agg_open) {
++      s.agg = FrameRecord{};
++      s.agg.frame = p2.frame;
++      s.agg.gpu_start_ns = start;
++      s.agg_open = true;
++    }
++    s.agg.gpu_end_ns = std::max(s.agg.gpu_end_ns, end);
++    s.agg.busy_ns += end > start ? end - start : 0;
++    ++s.agg.submissions;
++    for (uint32_t c = 0; c < kGpuTimeCategoryCount; ++c) {
++      s.agg.category_ns[c] += category_ns[c];
++      s.agg.category_spans[c] += category_spans[c];
++    }
++  }
++}
++
++}  // namespace beatles_frame_timer
++
++bool GpuCategoryTimingEnabled() {
++  return beatles_frame_timer::S().categories.load(std::memory_order_relaxed);
++}
++
++void GpuCategoryTimestamp(VkCommandBuffer command_buffer, uint32_t category, bool end) {
++  beatles_frame_timer::RecordMarker(command_buffer, category, end);
++}
++
++uint32_t GpuTransferProfileKey(const char* description, uint32_t tiles) {
++  auto& s = beatles_frame_timer::S();
++  auto [it, inserted] =
++      s.transfer_profile_index.try_emplace(description, uint32_t(s.transfer_profile.size() + 1));
++  if (inserted) s.transfer_profile.push_back({description});
++  auto& entry = s.transfer_profile[it->second - 1];
++  ++entry.draws;
++  entry.tiles += tiles;
++  return it->second;
++}
++
++}  // namespace rex::graphics::vulkan
++
++extern "C" __attribute__((visibility("default"))) void rex_gpu_frame_timing_enable() {
++  rex::graphics::vulkan::beatles_frame_timer::S().enabled.store(true);
++}
++
++// Also time GpuTimeCategory spans (more timestamps, each a pipeline drain; small overhead).
++extern "C" __attribute__((visibility("default"))) void rex_gpu_category_timing_enable() {
++  rex::graphics::vulkan::beatles_frame_timer::S().categories.store(true);
++}
++
++// Moves up to `max` finished frame records (beatles_frame_timer::FrameRecord) to `out`;
++// returns how many were written. Callable from any thread.
++extern "C" __attribute__((visibility("default"))) size_t rex_gpu_take_frame_records(
++    void* out, size_t max) {
++  using namespace rex::graphics::vulkan::beatles_frame_timer;
++  State& s = S();
++  std::lock_guard<std::mutex> guard(s.mutex);
++  size_t n = 0;
++  auto* records = static_cast<FrameRecord*>(out);
++  while (n < max && !s.records.empty()) {
++    records[n++] = s.records.front();
++    s.records.pop_front();
++  }
++  return n;
++}
++
++namespace rex::graphics::vulkan {
++
+ namespace {
+ 
+ // glslang default built-in resource limits.
+@@ -3594,6 +3942,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+   SCOPE_profile_cpu_f("gpu");
+ #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+ 
++  GpuStatAdd(GpuStatSlot::kGuestDraws, 1);  // beatles patch 0006
+   const RegisterFile& regs = *register_file_;
+   (void)index_buffer_info;
+   auto draw_fail = [&](const char* stage) {
+@@ -5293,6 +5642,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+ 
+   bool is_closing_frame = is_swap && frame_open_;
+ 
++  beatles_frame_timer::Collect(submission_completed_);  // beatles patch 0006
++
+   if (is_closing_frame) {
+     texture_cache_->EndFrame();
+ 
+@@ -5385,7 +5736,10 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+       REXGPU_ERROR("Failed to begin a Vulkan command buffer");
+       return false;
+     }
++    const uint32_t timer_slot = beatles_frame_timer::BeginSubmission(
++        vulkan_device, command_buffer.buffer, GetCurrentSubmission());  // beatles patch 0006
+     deferred_command_buffer_.Execute(command_buffer.buffer);
++    beatles_frame_timer::EndSubmission(command_buffer.buffer, timer_slot);
+     if (dfn.vkEndCommandBuffer(command_buffer.buffer) != VK_SUCCESS) {
+       REXGPU_ERROR("Failed to end a Vulkan command buffer");
+       return false;
+@@ -5430,6 +5784,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+       return false;
+     }
+     uint64_t submission_current = GetCurrentSubmission();
++    beatles_frame_timer::Submitted(timer_slot, submission_current, frame_current_);
+     current_submission_wait_stage_masks_.clear();
+     for (VkSemaphore semaphore : current_submission_wait_semaphores_) {
+       submissions_in_flight_semaphores_.emplace_back(submission_current, semaphore);
+@@ -5449,6 +5804,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+       shared_memory_->SetSystemPageBlocksValidWithGpuDataWritten();
+     }
+     frame_open_ = false;
++    beatles_frame_timer::FrameClosed(frame_current_);  // beatles patch 0006
+     // Submission already closed now, so minus 1.
+     closed_frame_submissions_[(frame_current_++) % kMaxFramesInFlight] = GetCurrentSubmission() - 1;
+ 
+diff --git i/src/graphics/vulkan/deferred_command_buffer.cpp w/src/graphics/vulkan/deferred_command_buffer.cpp
+index 5b4f9be..7f5ec74 100644
+--- i/src/graphics/vulkan/deferred_command_buffer.cpp
++++ w/src/graphics/vulkan/deferred_command_buffer.cpp
+@@ -32,6 +32,12 @@ void GpuStatAdd(GpuStatSlot slot, uint64_t value) {
+   g_gpu_stats[size_t(slot)].fetch_add(value, std::memory_order_relaxed);
+ }
+ 
++void GpuStatSnapshot(uint64_t* out) {
++  for (size_t i = 0; i < kGpuStatSlotCount; ++i) {
++    out[i] = g_gpu_stats[i].load(std::memory_order_relaxed);
++  }
++}
++
+ DeferredCommandBuffer::DeferredCommandBuffer(const VulkanCommandProcessor& command_processor,
+                                              size_t initial_size)
+     : command_processor_(command_processor) {
+@@ -330,6 +336,11 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+                                  rex::align(sizeof(ArgsVkSetViewport), alignof(VkViewport))));
+       } break;
+ 
++      case Command::kBeatlesTimestamp: {
++        auto& args = *reinterpret_cast<const ArgsBeatlesTimestamp*>(stream);
++        GpuCategoryTimestamp(command_buffer, args.category, args.end != 0);
++      } break;
++
+       default:
+         assert_unhandled_case(header.command);
+         break;
+@@ -442,13 +453,18 @@ void* DeferredCommandBuffer::WriteCommand(Command command, size_t arguments_size
+ 
+ }  // namespace rex::graphics::vulkan
+ 
+-// Returns the counters accumulated since the previous call and resets them. Writes at most
+-// `count` values (layout: rex::graphics::vulkan::GpuStatSlot); returns the number of slots.
++// Returns the counters accumulated since the previous call. Writes at most `count` values
++// (layout: rex::graphics::vulkan::GpuStatSlot); returns the number of slots. The counters
++// themselves are monotonic (patch 0006 also takes per-frame deltas), so this keeps its own
++// baseline; it must be called from one thread only.
+ extern "C" __attribute__((visibility("default"))) size_t rex_gpu_take_command_stats(
+     uint64_t* out, size_t count) {
+   using namespace rex::graphics::vulkan;
+-  for (size_t i = 0; i < kGpuStatSlotCount && i < count; ++i) {
+-    out[i] = g_gpu_stats[i].exchange(0, std::memory_order_relaxed);
++  static uint64_t last[kGpuStatSlotCount] = {};
++  for (size_t i = 0; i < kGpuStatSlotCount; ++i) {
++    const uint64_t now = g_gpu_stats[i].load(std::memory_order_relaxed);
++    if (i < count) out[i] = now - last[i];
++    last[i] = now;
+   }
+   return kGpuStatSlotCount;
+ }
+diff --git i/src/graphics/vulkan/render_target_cache.cpp w/src/graphics/vulkan/render_target_cache.cpp
+index 0298f06..ddbbeb2 100644
+--- i/src/graphics/vulkan/render_target_cache.cpp
++++ w/src/graphics/vulkan/render_target_cache.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <cstdio>
+ #include <array>
+ #include <cstddef>
+ #include <cstdint>
+@@ -41,6 +42,15 @@ REXCVAR_DEFINE_STRING(render_target_path_vulkan, "", "GPU/Vulkan",
+                       "Vulkan render target implementation path")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+ 
++// beatles patch 0006 (experiment): skip render-target ownership transfer draws whose
++// TransferMode bit is set (bit 0 kColorToDepth, 1 kColorToColor, 2 kDepthToDepth,
++// 3 kDepthToColor, 4 kColorToStencilBit, 5 kDepthToStencilBit, 6 kColorAndHostDepthToDepth,
++// 7 kDepthAndHostDepthToDepth, 8 kColorAndHostDepthCopyToDepth,
++// 9 kDepthAndHostDepthCopyToDepth). The destination then keeps whatever it held, which is
++// only correct if the game overwrites the area before reading it. -1 skips all.
++REXCVAR_DEFINE_INT32(rt_transfer_skip_modes, 0, "GPU/Vulkan",
++                     "Debug: bit mask of render-target transfer modes to skip (-1 = all)");
++
+ // DEFINE_string(
+ //     render_target_path_vulkan, "",
+ //     "Render target emulation path to use on Vulkan.\n"
+@@ -1283,7 +1293,11 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+                 sizeof(copy_shader_constants), &copy_shader_constants);
+           }
+           command_processor_.SubmitBarriers(true);
++          GpuStatAdd(GpuStatSlot::kResolves, 1);  // beatles patch 0006
++          const bool beatles_timed = GpuCategoryTimingEnabled();  // beatles patch 0006
++          if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kResolve, false);
+           command_buffer.CmdVkDispatch(copy_group_count_x, copy_group_count_y, 1);
++          if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kResolve, true);
+ 
+           // Invalidate textures and mark the range as scaled if needed.
+           texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
+@@ -5269,7 +5283,41 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
+               command_buffer.CmdVkSetStencilWriteMask(VK_STENCIL_FACE_FRONT_AND_BACK,
+                                                       transfer_stencil_bit);
+             }
++            if (uint32_t(REXCVAR_GET(rt_transfer_skip_modes)) &
++                (uint32_t(1) << uint32_t(transfer_shader_key.mode))) {
++              continue;  // beatles patch 0006 experiment
++            }
++            GpuStatAdd(GpuStatSlot::kRtTransferDraws, 1);  // beatles patch 0006
++            const bool beatles_timed = GpuCategoryTimingEnabled();  // beatles patch 0006
++            uint32_t beatles_key = 0;
++            if (beatles_timed) {
++              // Describe the transfer for the profile: mode, source -> destination
++              // (C/D, resource format, MSAA, pitch in tiles, EDRAM base), and stencil bit.
++              const RenderTargetKey sk = source_vulkan_rt.key();
++              uint32_t tiles = 0;
++              for (auto it_t = it_merged_first;; ++it_t) {
++                tiles += it_t->transfer.end_tiles - it_t->transfer.start_tiles;
++                if (it_t == it_merged_last) break;
++              }
++              char description[160];
++              std::snprintf(description, sizeof(description),
++                            "mode %u%s %c%u x%u p%u b%u -> %c%u x%u p%u b%u%s",
++                            uint32_t(transfer_shader_key.mode),
++                            host_depth_source_vulkan_rt ? "+hostdepth" : "",
++                            sk.is_depth ? 'D' : 'C', uint32_t(sk.resource_format),
++                            1u << uint32_t(sk.msaa_samples), uint32_t(sk.GetPitchTiles()),
++                            uint32_t(sk.base_tiles), dest_rt_key.is_depth ? 'D' : 'C',
++                            uint32_t(dest_rt_key.resource_format),
++                            1u << uint32_t(dest_rt_key.msaa_samples),
++                            uint32_t(dest_pitch_tiles), uint32_t(dest_rt_key.base_tiles),
++                            transfer_is_stencil_bit ? " stencil-bit" : "");
++              beatles_key = GpuTransferProfileKey(description, tiles);
++              command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kRtTransfer, false, beatles_key);
++            }
+             command_buffer.CmdVkDraw(transfer_vertex_count, 1, 0, 0);
++            if (beatles_timed) {
++              command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kRtTransfer, true, beatles_key);
++            }
+           }
+         }
+       }
+@@ -6136,6 +6184,9 @@ bool VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dum
+                                           sizeof(last_offsets), &last_offsets);
+       }
+       command_processor_.SubmitBarriers(true);
++      GpuStatAdd(GpuStatSlot::kEdramDumps, 1);  // beatles patch 0006
++      const bool beatles_timed = GpuCategoryTimingEnabled();
++      if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kEdramDump, false);
+       command_buffer.CmdVkDispatch(
+           (draw_resolution_scale_x() *
+                (xenos::kEdramTileWidthSamples >> uint32_t(rt_key.Is64bpp())) *
+@@ -6146,6 +6197,7 @@ bool VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dum
+            (kDumpSamplesPerGroupY - 1)) /
+               kDumpSamplesPerGroupY,
+           1);
++      if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kEdramDump, true);
+     }
+     MarkEdramBufferModified();
+   }
+diff --git i/src/graphics/vulkan/shared_memory.cpp w/src/graphics/vulkan/shared_memory.cpp
+index 4ce32cd..e1c3e04 100644
+--- i/src/graphics/vulkan/shared_memory.cpp
++++ w/src/graphics/vulkan/shared_memory.cpp
+@@ -310,8 +310,11 @@ bool VulkanSharedMemory::UploadRanges(
+                   upload_buffer_size);
+       if (upload_buffer_previous != upload_buffer && !upload_regions_.empty()) {
+         assert_true(upload_buffer_previous != VK_NULL_HANDLE);
++        const bool beatles_timed = GpuCategoryTimingEnabled();  // beatles patch 0006
++        if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kUpload, false);
+         command_buffer.CmdVkCopyBuffer(upload_buffer_previous, buffer_,
+                                        uint32_t(upload_regions_.size()), upload_regions_.data());
++        if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kUpload, true);
+         upload_regions_.clear();
+       }
+       upload_buffer_previous = upload_buffer;
+@@ -330,8 +333,11 @@ bool VulkanSharedMemory::UploadRanges(
+   }
+   if (!upload_regions_.empty()) {
+     assert_true(upload_buffer_previous != VK_NULL_HANDLE);
++    const bool beatles_timed = GpuCategoryTimingEnabled();  // beatles patch 0006
++    if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kUpload, false);
+     command_buffer.CmdVkCopyBuffer(upload_buffer_previous, buffer_,
+                                    uint32_t(upload_regions_.size()), upload_regions_.data());
++    if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kUpload, true);
+     upload_regions_.clear();
+   }
+   return successful;
+diff --git i/src/graphics/vulkan/texture_cache.cpp w/src/graphics/vulkan/texture_cache.cpp
+index ecbd940..d1a8965 100644
+--- i/src/graphics/vulkan/texture_cache.cpp
++++ w/src/graphics/vulkan/texture_cache.cpp
+@@ -1237,6 +1237,7 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+   if (pipeline == VK_NULL_HANDLE) {
+     return false;
+   }
++  GpuStatAdd(GpuStatSlot::kTextureLoads, 1);  // beatles patch 0006
+   const LoadShaderInfo& load_shader_info = GetLoadShaderInfo(load_shader);
+   LoadShaderIndex load_shader_float_convert = kLoadShaderIndexUnknown;
+   if (host_format.format == VK_FORMAT_R16G16B16A16_SFLOAT) {
+@@ -1609,7 +1610,12 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+                                           &load_constants.host_offset);
+       }
+       command_processor_.SubmitBarriers(true);
++      GpuStatAdd(GpuStatSlot::kTextureLoadDispatches, 1);  // beatles patch 0006
++      GpuStatAdd(GpuStatSlot::kTextureLoadBytes, level_host_layout.slice_size_bytes);
++      const bool beatles_timed = GpuCategoryTimingEnabled();  // beatles patch 0006
++      if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kTextureLoad, false);
+       command_buffer.CmdVkDispatch(group_count_x, group_count_y, load_constants.size_blocks[2]);
++      if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kTextureLoad, true);
+       load_constants.guest_offset += level_array_slice_stride_bytes_scaled;
+       load_constants.host_offset += uint32_t(level_host_layout.slice_size_bytes);
+     }
+@@ -1709,8 +1715,12 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+                                             &load_constants_float_convert.host_offset);
+         }
+         command_processor_.SubmitBarriers(true);
++        GpuStatAdd(GpuStatSlot::kTextureLoadDispatches, 1);  // beatles patch 0006
++        const bool beatles_timed = GpuCategoryTimingEnabled();  // beatles patch 0006
++        if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kTextureLoad, false);
+         command_buffer.CmdVkDispatch(group_count_x, group_count_y,
+                                      load_constants_float_convert.size_blocks[2]);
++        if (beatles_timed) command_buffer.CmdBeatlesTimestamp(GpuTimeCategory::kTextureLoad, true);
+         load_constants_float_convert.guest_offset += level_array_slice_stride_bytes;
+         load_constants_float_convert.host_offset += level_array_slice_stride_bytes;
+       }

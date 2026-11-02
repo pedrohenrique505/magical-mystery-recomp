@@ -58,6 +58,8 @@ std::string PresentStatsLine();
 void PacePresent();
 // gpu_capture.cpp: RenderDoc captures of slow frames (--capture_slow_frames).
 void GpuCaptureOnSwap(double frame_ms);
+// gpu_frame_log.cpp: per-frame host GPU times (--gpu_frame_csv).
+void GpuFrameLogOnSwap();
 // hitch_tracer.cpp
 void HitchOnSwap(std::chrono::steady_clock::time_point prev,
                  std::chrono::steady_clock::time_point now, double prev_call_ms);
@@ -362,6 +364,7 @@ REX_EXTERN(__imp__VdSwap) {
   static double prev_call_ms = 0.0;
   const Clock::time_point now = Clock::now();
   HitchOnSwap(prev, now, prev_call_ms);
+  GpuFrameLogOnSwap();
   if (prev != Clock::time_point{}) {
     GpuCaptureOnSwap(std::chrono::duration<double, std::milli>(now - prev).count());
   }

@@ -65,6 +65,27 @@ REXCVAR_DEFINE_INT32(present_pacing_frames, 1, "Debug",
                      "(1 = double buffering, lowest latency; 2 = triple buffering, keeps the GPU "
                      "busy when frames miss vsync)");
 
+// Symbols exported by the rebuilt xenos plugin (patches/rexglue-sdk/0003, 0006). The plugin
+// is dlopen'ed privately by the SDK, so find it among the loaded objects and look the symbol
+// up through a non-loading handle. Returns nullptr with the prebuilt plugin.
+void* GpuPluginSymbol(const char* name) {
+  std::string plugin_path;
+  dl_iterate_phdr(
+      [](dl_phdr_info* info, size_t, void* data) {
+        if (info->dlpi_name && std::strstr(info->dlpi_name, "librexgpu-xenos")) {
+          *static_cast<std::string*>(data) = info->dlpi_name;
+          return 1;
+        }
+        return 0;
+      },
+      &plugin_path);
+  if (plugin_path.empty()) {
+    return nullptr;
+  }
+  void* handle = dlopen(plugin_path.c_str(), RTLD_NOW | RTLD_NOLOAD);
+  return handle ? dlsym(handle, name) : nullptr;
+}
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -160,33 +181,12 @@ MemberFn ResolveSdkMember(const char* mangled) {
   return fn;
 }
 
-// GPU command counters exported by the rebuilt xenos plugin (patches/rexglue-sdk/0003).
-// The plugin is dlopen'ed privately by the SDK, so find it among the loaded objects and
-// look the symbol up through a non-loading handle.
 using TakeGpuStats = size_t (*)(uint64_t*, size_t);
-TakeGpuStats FindTakeGpuStats() {
-  std::string plugin_path;
-  dl_iterate_phdr(
-      [](dl_phdr_info* info, size_t, void* data) {
-        if (info->dlpi_name && std::strstr(info->dlpi_name, "librexgpu-xenos")) {
-          *static_cast<std::string*>(data) = info->dlpi_name;
-          return 1;
-        }
-        return 0;
-      },
-      &plugin_path);
-  if (plugin_path.empty()) {
-    return nullptr;
-  }
-  void* handle = dlopen(plugin_path.c_str(), RTLD_NOW | RTLD_NOLOAD);
-  return handle ? reinterpret_cast<TakeGpuStats>(dlsym(handle, "rex_gpu_take_command_stats"))
-                : nullptr;
-}
 
 // Totals since the previous --perf_log line (indices: DeferredCommandBuffer::Command, then
 // rex::graphics::vulkan::GpuStatSlot).
 std::string GpuCommandStatsPart() {
-  static const TakeGpuStats take = FindTakeGpuStats();
+  static const auto take = reinterpret_cast<TakeGpuStats>(GpuPluginSymbol("rex_gpu_take_command_stats"));
   if (!take) {
     return {};
   }

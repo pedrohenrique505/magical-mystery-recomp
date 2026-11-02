@@ -25,15 +25,27 @@ if [ "${1:-}" = "--remove" ]; then
   exit 0
 fi
 
-for p in "$ROOT"/patches/rexglue-sdk/*.patch; do
-  [ -e "$p" ] || continue
-  if git -C "$SDK" apply --reverse --check "$p" 2>/dev/null; then
-    echo "build_sdk.sh: already applied: $(basename "$p")"
-  else
-    git -C "$SDK" apply "$p"
-    echo "build_sdk.sh: applied: $(basename "$p")"
-  fi
-done
+# Rebuild the expected content of every patched file in a temporary copy (HEAD + all patches,
+# in order) and copy over only the files that differ, so the step is idempotent and leaves
+# unchanged files' timestamps alone (no needless recompiles). Per-patch "already applied"
+# checks do not work once a later patch edits lines next to an earlier one.
+PATCHES=("$ROOT"/patches/rexglue-sdk/*.patch)
+if [ -e "${PATCHES[0]}" ]; then
+  STAGE="$(mktemp -d "$ROOT/build/sdk-patch.XXXXXX")"
+  trap 'rm -rf -- "$STAGE"' EXIT
+  mapfile -t PATCHED < <(sed -n 's|^+++ w/||p' "${PATCHES[@]}" | sort -u)
+  git -C "$SDK" archive HEAD "${PATCHED[@]}" | tar -x -C "$STAGE"
+  for p in "${PATCHES[@]}"; do
+    patch -s -p1 -d "$STAGE" < "$p"
+  done
+  for f in "${PATCHED[@]}"; do
+    if ! cmp -s "$STAGE/$f" "$SDK/$f"; then
+      cp -f -- "$STAGE/$f" "$SDK/$f"
+      echo "build_sdk.sh: updated $f"
+    fi
+  done
+  echo "build_sdk.sh: ${#PATCHES[@]} patches in place"
+fi
 
 if [ ! -f "$BUILD/build.ninja" ]; then
   cmake -S "$SDK" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \

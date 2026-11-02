@@ -24,6 +24,7 @@ set(BEATLES_SOURCES
     src/gpu_capture.cpp
     src/renderdoc_guard.cpp
     src/world_rate_hooks.cpp
+    src/gpu_frame_log.cpp
 )
 
 if(WIN32)

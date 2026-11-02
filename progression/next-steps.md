@@ -28,14 +28,18 @@ over-budget GPU frames in "Sgt. Pepper" (7.9% → 0.02%), no glitches. What is l
   (~1.5 ms; 38% of over-budget frames would fit even with the overhead) — worth porting but not
   enough alone. The rest is game content (geometry + post at 4x MSAA): game-side quality options
   (MSAA, blur/bloom passes; find them with Ghidra) for the PC settings section.
-- **Direct resolve ported (patch 0007, 2026-11-02), needs gameplay validation:** the SDK's
+- **Direct resolve ported and validated (patch 0007, 2026-11-02):** the SDK's
   `direct_host_resolve` was a stub on Vulkan; it now reads host render targets straight into
   shared memory for bitwise (fast) resolve copies whose source is fully owned by render
   targets with the same layout (xenia-edge's rules). Intro: 2 of 5 resolves per frame go
-  direct, EDRAM dumps 5 → 3, GPU per frame 6.79 → 6.04 ms. Next: a "Sgt. Pepper" run (normal
-  and `--full_rate_world`) with `--gpu_frame_categories`, checking for glitches in
-  render-to-texture effects (crowd impostors, shadows, blur); `--direct_host_resolve=false`
-  restores the old path.
+  direct, EDRAM dumps 5 → 3, GPU per frame 6.79 → 6.04 ms. "Sgt. Pepper" with
+  `--full_rate_world` (categories on): EDRAM dumps 39.6 → 3.8 per frame, GPU per frame
+  15.8 → 14.9 ms (p90 20.6 → 19.3), frames over budget 54% → 39%, guest 51.6 → 53.6 fps; no
+  glitches (user). The default half-rate mode was already at 60 and gains headroom (~0.7-1 ms
+  per frame: the post chain resolves every frame). `--direct_host_resolve=false` restores the
+  old path. Full rate still misses 60: what is left is game drawing (~8.8 ms), transfers
+  (2.8 ms) and texture reloads after resolves (1.3 ms) — next levers are game-side quality
+  options (Ghidra) for the PC settings section.
 
 **How to measure:** on AC power (check `/sys/class/power_supply/*/status`; on battery the iGPU
 runs at 400 MHz), `RUN_LOG=build/runX.log scripts/run.sh --perf_log=true

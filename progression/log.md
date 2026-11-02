@@ -170,3 +170,5 @@
   scaling, source fully owned by render targets with the resolve's layout).
 - Intro A/B: GPU per frame 6.79 → 6.04 ms, EDRAM dumps 5 → 3 per frame. Gameplay validation
   pending. `scripts/build_sdk.sh` and the patch series now go up to 0007.
+- Gameplay validation (user, "Sgt. Pepper", `--full_rate_world`): EDRAM dumps 39.6 → 3.8 per
+  frame, GPU 15.8 → 14.9 ms per frame, guest 51.6 → 53.6 fps, no glitches. Validated.

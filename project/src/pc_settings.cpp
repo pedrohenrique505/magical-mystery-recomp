@@ -3,7 +3,8 @@
 // The screen and menu entries are DTA scripts added by scripts/build_game_overlay.py
 // (project/mods/); they call {pc_cfg <subcommand> ...}, which script_bridge.cpp
 // forwards here. Each setting maps onto an SDK or project cvar; the player's choices
-// are stored in <user_data_root>/pc_settings.toml and applied at startup, below the
+// are stored in <user_data_root>/pc_settings.toml (or $BEATLES_PC_SETTINGS_FILE) and applied
+// at startup, below the
 // command line and REX_* environment variables (so those still win for testing).
 //
 // Subcommands (all return an int to the script):
@@ -34,6 +35,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -330,6 +332,12 @@ void Load() {
 void LoadPcSettings(const std::filesystem::path& user_data_root) {
   std::lock_guard lock(g_mutex);
   g_settings_path = user_data_root / "pc_settings.toml";
+  // Benchmarks (scripts/bench_song.sh) point this at their own file so the player's
+  // choices neither skew the numbers nor get overwritten.
+  if (const char* override_path = std::getenv("BEATLES_PC_SETTINGS_FILE");
+      override_path && *override_path) {
+    g_settings_path = override_path;
+  }
   Load();
   // Apply the choices as a config file rather than with SetFlagByName: several cvars
   // (resolution_scale, anisotropic_override) belong to the GPU plugin, which registers

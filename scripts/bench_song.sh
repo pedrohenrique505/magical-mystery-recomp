@@ -40,6 +40,11 @@ sleep 1
 pad() { for c in "$@"; do echo "$c" > "$fifo"; done; }
 
 : > "$log"
+# The player's PC Settings would skew the numbers: use the defaults unless BENCH_PC_SETTINGS
+# names a settings file to test (same format as ~/.local/share/beatles/pc_settings.toml).
+bench_settings="build/bench_pc_settings.toml"
+if [ -n "${BENCH_PC_SETTINGS:-}" ]; then cp "$BENCH_PC_SETTINGS" "$bench_settings"; else : > "$bench_settings"; fi
+export BEATLES_PC_SETTINGS_FILE="$PWD/$bench_settings"
 # No ImGui overlay during a measurement (it moves painting to the UI thread, KI-14).
 export REX_BIND_DEBUG_OVERLAY="${REX_BIND_DEBUG_OVERLAY:-none}"
 RUN_LOG="$log" setsid scripts/run.sh --perf_log=true --gpu_frame_csv="$csv" "$@" \

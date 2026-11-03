@@ -32,7 +32,19 @@ expensive options cheaper.
    (game visible and focused). The built-in menu sequence is slow (user: "agonizing"): have
    the user record their own navigation once with `scripts/record_pad.py`, which
    bench_song.sh then replays at their speed.
-5. **Menu polish (small):** localized strings for the other languages; maybe a "restart now"
+5. **Remaining GPU bottlenecks (2026-11-02, full-rate venue frame, 16.6 ms; KI-18), in order:**
+   (a) **open the ~9.5 ms of the game's own draws** (60% of the frame, not broken down yet):
+   RGP capture of a heavy venue frame (`scripts/rgp_capture.sh`, driven by
+   `scripts/bench_song.sh`) to price crowd (~6 ms left after LOD 1?), characters, scenery and
+   each post pass; then target the biggest (cheaper bloom: −1 ms when off; spotlights in some
+   venues); (b) render-target transfers ~2.6 ms: port xenia-edge 9da693480 only if the
+   `transfer profile:` log shows color/depth aliasing on the same range; (c) resolves 1.3 +
+   texture reloads 1.2 ms: the post chain round-trips through shared memory every frame;
+   resolving straight into the texture would remove it (large SDK change); (d) 2x Horizontal
+   (+4-8 ms) only fits once these free room. Ruled out: CPU, RADV options, crowd count,
+   self-shadows, upload coalescing, FSI, the cheap xenia-edge ports. Open: the random ~48 fps
+   intro stretch (KI-14 note).
+6. **Menu polish (small):** localized strings for the other languages; maybe a "restart now"
    action for restart-only settings.
 
 **How to measure:** on AC power (check `/sys/class/power_supply/*/status`; on battery the iGPU

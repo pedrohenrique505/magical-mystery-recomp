@@ -1,0 +1,24 @@
+; venue_detail.dta - venue detail knobs, applied by scripts/build_game_overlay.py to
+; world/gen/world_objects.dtb (BandCamShot type, start_shot handler: runs at every camera
+; shot). The values come from host cvars through {pc_cfg cvar ...} (project/src/pc_settings.cpp);
+; the defaults keep the game's own behaviour.
+;
+; crowd: replaces the handler's last two crowd commands
+;   {$crowd set_fullness [crowd_density] [crowd_density]}
+;   {$crowd set lod [crowd_lod]}
+; so --venue_crowd_pct scales each shot's flat (impostor) crowd density,
+; --venue_crowd_3d_pct its full 3D crowd characters (WorldCrowd::SetFullness(flat, full)), and --venue_crowd_lod raises the
+; lowest impostor texture LOD (0 = 256x512, 1 = 128x256, 2 = 64x128).
+(crowd
+   {$crowd
+      set_fullness
+      {'*' [crowd_density] {'/' {pc_cfg cvar venue_crowd_pct} 100.0}}
+      {'*' [crowd_density] {'/' {pc_cfg cvar venue_crowd_3d_pct} 100.0}}}
+   {$crowd set lod {max [crowd_lod] {pc_cfg cvar venue_crowd_lod}}})
+
+; shot: appended to start_shot.
+(shot
+   {if {pc_cfg cvar venue_no_dof} {$this set use_depth_of_field FALSE}}
+   {if
+      {'&&' $world {pc_cfg cvar venue_no_self_shadow}}
+      {foreach $c {object_list $world Character} {$c set self_shadow FALSE}}})

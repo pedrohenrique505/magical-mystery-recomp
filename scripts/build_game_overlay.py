@@ -20,6 +20,8 @@ from DTA snippets in project/mods/ (our own content, see the files for details):
                    "PC Settings" in the Options popup
   pc_settings.dta  the PC Settings screen, appended to ui/options/gen/options_console.dtb
   locale.dta     strings for the new entries, added to every language
+  venue_detail.dta  venue detail knobs (crowd density/LOD, depth of field, self-shadows)
+                   read from host cvars at every camera shot, in world/gen/world_objects.dtb
 
 Usage: scripts/build_game_overlay.py [--game game] [--out build/game_overlay] [--if-stale]
 """
@@ -79,6 +81,46 @@ def patch_main_panel(top, mod):
     top.extend(mod_section(mod, "objects"))
 
 
+def patch_venue_detail(top, mod):
+    """world/gen/world_objects.dtb: BandCamShot start_shot takes its crowd density/LOD from
+    host cvars and can turn off depth of field and self-shadows (venue_detail.dta)."""
+    shot_type = next(n.value for n in top
+                     if n.type == hx.ARRAY and n.value and n.value[0].is_sym("BandCamShot"))
+    found = []
+
+    def walk(arr):
+        for n in arr:
+            if n.type in (hx.ARRAY, hx.COMMAND, hx.PROPERTY):
+                if n.type == hx.ARRAY and n.value and n.value[0].is_sym("start_shot"):
+                    found.append(n.value)
+                walk(n.value)
+    walk(shot_type)
+    if len(found) != 1:
+        raise ValueError(f"expected one BandCamShot start_shot, found {len(found)}")
+    handler = found[0]
+
+    def is_crowd_cmd(n, verb):
+        return (n.type == hx.COMMAND and len(n.value) > 1 and n.value[0].type == hx.VAR
+                and n.value[0].value == "crowd" and n.value[1].is_sym(verb))
+
+    parents = []
+
+    def find_parent(arr):
+        for i, n in enumerate(arr):
+            if is_crowd_cmd(n, "set_fullness"):
+                parents.append((arr, i))
+            if n.type in (hx.ARRAY, hx.COMMAND, hx.PROPERTY):
+                find_parent(n.value)
+    find_parent(handler)
+    if len(parents) != 1:
+        raise ValueError(f"expected one crowd set_fullness, found {len(parents)}")
+    arr, i = parents[0]
+    if not (i + 1 < len(arr) and is_crowd_cmd(arr[i + 1], "set")):
+        raise ValueError("crowd 'set lod' does not follow set_fullness")
+    arr[i:i + 2] = mod_section(mod, "crowd")
+    handler.extend(mod_section(mod, "shot"))
+
+
 def patch_locale(top, mod):
     top.extend(n for n in mod)
 
@@ -122,6 +164,11 @@ def build(game, out):
     seed, top = load("ui/options/gen/options_console.dtb")
     top.extend(mod_section(mod("pc_settings.dta"), "objects"))
     patched["ui/options/gen/options_console.dtb"] = hx.dump_dtb(seed, top)
+
+    if (MODS / "venue_detail.dta").exists():
+        seed, top = load("world/gen/world_objects.dtb")
+        patch_venue_detail(top, mod("venue_detail.dta"))
+        patched["world/gen/world_objects.dtb"] = hx.dump_dtb(seed, top)
 
     locale_mod = mod("locale.dta")
     for e in hdr.entries:

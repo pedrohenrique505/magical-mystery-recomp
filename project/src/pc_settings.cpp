@@ -12,9 +12,14 @@
 //   {pc_cfg cycle <key>}     next value of a multi-choice setting; returns it
 //   {pc_cfg pending <key>}   1 if the stored value only takes effect after a restart
 //   {pc_cfg quit}            close the game (same path as closing the window)
+//   {pc_cfg cvar <name>}     value of any int/bool cvar (bools: 0/1), for script-side
+//                            knobs such as the venue detail cvars below
 //
 // Keys:
-//   full_rate_world   bool  venue drawn every frame (world_rate_hooks.cpp)    live
+//   full_rate_world   venue mode (world_rate_hooks.cpp, venue_detail.dta)       live
+//                     0 = 30 FPS (the engine's own rate), 1 = 60 FPS (full rate while
+//                     it fits, adaptive), 2 = 60 FPS Performance (same, plus crowd
+//                     impostor LOD 1 and no depth of field: ~2 ms less GPU per frame)
 //   fullscreen        bool  SDK window fullscreen                               live
 //   letterbox         bool  SDK present_letterbox (keep 16:9, else stretch)     live
 //   resolution_scale  1, 4, 2, 3 (cycle order): internal render scale        restart
@@ -46,6 +51,18 @@
 #include "pc_settings.h"
 #include "script_bridge.h"
 
+// Venue detail knobs read by the venue scripts (project/mods/venue_detail.dta) through
+// {pc_cfg cvar ...} at every camera shot. Defaults keep the game's own values.
+REXCVAR_DEFINE_INT32(venue_crowd_pct, 100, "Beatles",
+                     "Venue flat (impostor) crowd density in percent of the camera shot's own (0-100)");
+REXCVAR_DEFINE_INT32(venue_crowd_3d_pct, 100, "Beatles",
+                     "Venue 3D crowd characters in percent of the camera shot's own (0-100)");
+REXCVAR_DEFINE_INT32(venue_crowd_lod, 0, "Beatles",
+                     "Lowest crowd impostor texture LOD (0 = 256x512, 1 = 128x256, 2 = 64x128)");
+REXCVAR_DEFINE_BOOL(venue_no_dof, false, "Beatles", "Turn off the camera shots' depth of field");
+REXCVAR_DEFINE_BOOL(venue_no_self_shadow, false, "Beatles",
+                    "Turn off the characters' self-shadow maps");
+
 namespace {
 
 struct Setting {
@@ -57,8 +74,8 @@ struct Setting {
   // Script value <-> cvar string.
   std::function<std::string(int32_t)> to_cvar;
   std::function<int32_t(const std::string&)> from_cvar;
-  // Optional: every cvar the value sets at startup (restart-only settings that span
-  // several cvars); when empty, just {cvar, to_cvar(value)}.
+  // Optional: every cvar the value sets (settings that span several cvars); when empty,
+  // just {cvar, to_cvar(value)}.
   std::function<std::vector<std::pair<std::string, std::string>>(int32_t)> to_cvars;
 };
 
@@ -116,6 +133,24 @@ int32_t ResolutionFromCvars(const std::string& resolution_scale) {
   return std::max(scale, int32_t(1));
 }
 
+// Venue mode (see the key list above). Performance = the cheapest settings that kept the
+// full-rate venue at ~60 fps on a Vega 6 with acceptable looks (log.md, 2026-11-02).
+std::vector<std::pair<std::string, std::string>> VenueToCvars(int32_t v) {
+  return {
+      {"full_rate_world", v > 0 ? "true" : "false"},
+      {"full_rate_world_adaptive", "true"},
+      {"venue_crowd_lod", v == 2 ? "1" : "0"},
+      {"venue_no_dof", v == 2 ? "true" : "false"},
+  };
+}
+int32_t VenueFromCvars(const std::string& full_rate_world) {
+  if (!ParseBool(full_rate_world)) return 0;
+  return ParseInt(rex::cvar::GetFlagByName("venue_crowd_lod")) > 0 ||
+                 ParseBool(rex::cvar::GetFlagByName("venue_no_dof"))
+             ? 2
+             : 1;
+}
+
 std::string AaToCvar(int32_t v) {
   return v == 1 ? "fxaa" : v == 2 ? "fxaa_extreme" : "none";
 }
@@ -125,7 +160,8 @@ int32_t AaFromCvar(const std::string& s) {
 
 const std::array<Setting, 6>& Settings() {
   static const std::array<Setting, 6> settings = {{
-      {"full_rate_world", "full_rate_world", {0, 1}, false, BoolStr, ParseBool},
+      {"full_rate_world", "full_rate_world", {0, 1, 2}, false, BoolStr, VenueFromCvars,
+       VenueToCvars},
       {"fullscreen", "fullscreen", {0, 1}, false, BoolStr, ParseBool},
       {"letterbox", "present_letterbox", {0, 1}, false, BoolStr, ParseBool},
       {"resolution_scale", "resolution_scale", {1, kResolution2xHorizontal, 2, 3}, true,
@@ -186,13 +222,18 @@ void Apply(const Setting& s, int32_t value) {
     REXLOG_INFO("pc_settings: {} = {} (applies after a restart)", s.key, value);
     return;
   }
-  std::string cvar = s.cvar;
-  std::string str = s.to_cvar(value);
-  REXLOG_INFO("pc_settings: {} = {} ({} = {})", s.key, value, cvar, str);
+  auto cvars = s.to_cvars ? s.to_cvars(value)
+                          : std::vector<std::pair<std::string, std::string>>{
+                                {s.cvar, s.to_cvar(value)}};
+  for (const auto& [cvar, str] : cvars) {
+    REXLOG_INFO("pc_settings: {} = {} ({} = {})", s.key, value, cvar, str);
+  }
   // Change callbacks (e.g. fullscreen) touch the window: run them on the UI thread.
-  auto set = [cvar, str] {
-    if (!rex::cvar::SetFlagByName(cvar, str)) {
-      REXLOG_WARN("pc_settings: {} rejected value {}", cvar, str);
+  auto set = [cvars] {
+    for (const auto& [cvar, str] : cvars) {
+      if (!rex::cvar::SetFlagByName(cvar, str)) {
+        REXLOG_WARN("pc_settings: {} rejected value {}", cvar, str);
+      }
     }
   };
   if (g_run_on_ui_thread) {
@@ -214,6 +255,14 @@ int32_t HandleCommand(const std::vector<ScriptValue>& args) {
       g_request_quit();
     }
     return 1;
+  }
+  if (cmd.s == "cvar") {
+    if (args.size() < 2 || args[1].kind != ScriptValue::kSymbol) {
+      REXLOG_WARN("pc_cfg cvar: expected a cvar name");
+      return 0;
+    }
+    std::string v = rex::cvar::GetFlagByName(args[1].s);
+    return v == "true" ? 1 : v == "false" ? 0 : ParseInt(v);
   }
   if (args.size() < 2 || args[1].kind != ScriptValue::kSymbol) {
     REXLOG_WARN("pc_cfg {}: expected a setting name", cmd.s);

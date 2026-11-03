@@ -4,7 +4,7 @@ _Last updated: 2026-11-02 (evening session)_
 
 ## Summary
 
-The recompiled game is **playable end to end with a gamepad emulating a guitar** (or bass/drums, `--instruments`): intro, menus, party creation, song list and full songs, with clean audio (KI-13). Gameplay holds a **steady 60 fps** on the Vega 6 iGPU (Ryzen 5 4600H): frame pacing is locked to vsync (KI-14), and the camera-cut drops are gone since `execute_unclipped_draw_vs_on_cpu` stopped render-target transfers from copying the whole EDRAM (frames over the 16.7 ms GPU budget 7.9% → 0.02% in "Sgt. Pepper"; other scenes confirmed by the user). The Vulkan direct resolve (patch 0007) skips the EDRAM dump for ~90% of resolves. The 3D venue is drawn at 30 fps by the engine's design; `--full_rate_world` draws it every frame at ~54 fps (off by default). The game's own menus now have **Options → PC Settings** (venue rate, fullscreen, aspect ratio, internal resolution, texture filtering, FXAA) and **Quit to Desktop**, added by patching the game's DTA scripts at runtime without touching the dump (KI-16).
+The recompiled game is **playable end to end with a gamepad emulating a guitar** (or bass/drums, `--instruments`): intro, menus, party creation, song list and full songs, with clean audio (KI-13). Gameplay holds a **steady 60 fps** on the Vega 6 iGPU (Ryzen 5 4600H): frame pacing is locked to vsync (KI-14), and the camera-cut drops are gone since `execute_unclipped_draw_vs_on_cpu` stopped render-target transfers from copying the whole EDRAM (frames over the 16.7 ms GPU budget 7.9% → 0.02% in "Sgt. Pepper"; other scenes confirmed by the user). The Vulkan direct resolve (patch 0007) skips the EDRAM dump for ~90% of resolves. The 3D venue is drawn at 30 fps by the engine's design; `--full_rate_world` draws it every frame (~54 fps when forced always; by default it is adaptive and falls back to the engine's rate in heavy shots, gameplay test pending; off by default). The game's own menus now have **Options → PC Settings** (venue rate, fullscreen, aspect ratio, internal resolution, texture filtering, FXAA) and **Quit to Desktop**, added by patching the game's DTA scripts at runtime without touching the dump (KI-16).
 
 ## Working
 
@@ -29,7 +29,7 @@ The recompiled game is **playable end to end with a gamepad emulating a guitar**
 - Title update device (`update:\`) missing (KI-2).
 - Saves/XContent, DLC, achievements, Live.
 - 4 functions still PENDING in the analysis (KI-1).
-- `--full_rate_world` misses 60 fps (~54) on the Vega 6; the rest is mostly the game's own drawing.
+- The venue forced every frame misses 60 fps (~53) on the Vega 6; PC Settings "Venue: 60 FPS Performance" (adaptive full rate, lower-resolution crowd impostors, no depth of field) holds 60 with the venue at full rate ~60% of the time (KI-18).
 - Internal resolution 2x2 runs at ~28 fps and 2x1 at ~50 fps (KI-17); with patch 0010 the menu's "2x Horizontal" (2x1, sharp) runs at 56.2 fps, not yet a stable 60.
 - PC Settings strings are English in every language; FSR/CAS need an SDK build with FidelityFX (not available).
 

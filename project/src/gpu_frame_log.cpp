@@ -21,11 +21,14 @@
 //   so a little overhead); the rest of busy_ms is the game's own draws and post passes.
 // A frame that costs more than ~16.7 ms of busy time cannot make 60 fps by itself.
 // Analyse with scripts/analyze_gpu_frames.py.
+// The same records drive the adaptive full-rate venue (world_rate_hooks.cpp), which turns the
+// timing on by itself through GpuFrameTimingEnable() and drains it with GpuFramePump().
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -41,6 +44,10 @@ REXCVAR_DEFINE_BOOL(gpu_frame_categories, false, "Debug",
 
 // present_hooks.cpp
 void* GpuPluginSymbol(const char* name);
+// world_rate_hooks.cpp: the adaptive full-rate venue's GPU time feed.
+void WorldRateOnGpuFrame(uint64_t frame, double busy_ms);
+
+void GpuFramePump();
 
 namespace {
 
@@ -86,68 +93,102 @@ enum : size_t {
   kStatsNeeded = 40,
 };
 
-void WriterThread(TakeFn take, FILE* f) {
-  static FrameRecord records[256];
-  bool have_origin = false;
-  uint64_t origin_cpu = 0, origin_gpu = 0, prev_end = 0;
-  uint64_t frames = 0;
+// The plugin hands each finished frame record out once, so one pump feeds every consumer:
+// the CSV (if any) and the adaptive full-rate venue (world_rate_hooks.cpp). Called from the
+// CSV thread and from the guest main thread once per frame.
+std::mutex g_pump_mutex;
+TakeFn g_take = nullptr;
+FILE* g_csv = nullptr;
+bool g_have_origin = false;
+uint64_t g_origin_cpu = 0, g_origin_gpu = 0, g_prev_end = 0;
+
+void WriteCsvRow(const FrameRecord& r) {
+  FILE* f = g_csv;
+  if (!g_have_origin) {
+    g_have_origin = true;
+    g_origin_cpu = r.cpu_close_ns;
+    g_origin_gpu = r.gpu_start_ns;
+    g_prev_end = r.gpu_start_ns;
+  }
+  const uint64_t* v = r.stats;
+  const bool stats = r.stat_count >= kStatsNeeded;
+  auto st = [&](size_t i) -> unsigned long long { return stats ? v[i] : 0; };
+  const double gap = (double(r.gpu_start_ns) - double(g_prev_end)) / 1e6;
+  const double interval = (double(r.gpu_end_ns) - double(g_prev_end)) / 1e6;
+  std::fprintf(
+      f,
+      "%llu,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%llu,%llu,%llu,%llu,%llu,%llu,%.1f,%llu,%llu,"
+      "%llu,%.1f,%llu,%llu,%llu,%llu,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+      (unsigned long long)r.frame,
+      r.cpu_close_ns ? (double(r.cpu_close_ns) - double(g_origin_cpu)) / 1e9 : -1.0,
+      (double(r.gpu_start_ns) - double(g_origin_gpu)) / 1e6,
+      (double(r.gpu_end_ns) - double(r.gpu_start_ns)) / 1e6, double(r.busy_ns) / 1e6, gap,
+      interval, r.submissions, st(kGuestDraws), st(kDraw) + st(kDrawIndexed),
+      st(kBeginRenderPass) + st(kBeginRendering), st(kPipelineBarrier), st(kDispatch),
+      st(kUploads), st(kUploadBytes) / 1024.0, st(kUploadRenderPassEnds), st(kTextureLoads),
+      st(kTextureLoadDispatches), st(kTextureLoadBytes) / 1024.0, st(kResolves),
+      st(kEdramDumps), st(kRtTransferDraws),
+      st(kClearAttachments) + st(kClearColorImage) + st(kCopyBufferToImage),
+      r.category_ns[0] / 1e6, r.category_ns[1] / 1e6, r.category_ns[2] / 1e6,
+      r.category_ns[3] / 1e6, r.category_ns[4] / 1e6);
+  g_prev_end = r.gpu_end_ns;
+}
+
+void CsvThread() {
   for (;;) {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    size_t n;
-    while ((n = take(records, std::size(records))) != 0) {
-      for (size_t i = 0; i < n; ++i) {
-        const FrameRecord& r = records[i];
-        if (!have_origin) {
-          have_origin = true;
-          origin_cpu = r.cpu_close_ns;
-          origin_gpu = r.gpu_start_ns;
-          prev_end = r.gpu_start_ns;
-        }
-        const uint64_t* v = r.stats;
-        const bool stats = r.stat_count >= kStatsNeeded;
-        auto st = [&](size_t i) -> unsigned long long { return stats ? v[i] : 0; };
-        const double gap = (double(r.gpu_start_ns) - double(prev_end)) / 1e6;
-        const double interval = (double(r.gpu_end_ns) - double(prev_end)) / 1e6;
-        std::fprintf(
-            f,
-            "%llu,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%llu,%llu,%llu,%llu,%llu,%llu,%.1f,%llu,%llu,"
-            "%llu,%.1f,%llu,%llu,%llu,%llu,%.3f,%.3f,%.3f,%.3f,%.3f\n",
-            (unsigned long long)r.frame,
-            r.cpu_close_ns ? (double(r.cpu_close_ns) - double(origin_cpu)) / 1e9 : -1.0,
-            (double(r.gpu_start_ns) - double(origin_gpu)) / 1e6,
-            (double(r.gpu_end_ns) - double(r.gpu_start_ns)) / 1e6, double(r.busy_ns) / 1e6, gap,
-            interval, r.submissions, st(kGuestDraws), st(kDraw) + st(kDrawIndexed),
-            st(kBeginRenderPass) + st(kBeginRendering), st(kPipelineBarrier), st(kDispatch),
-            st(kUploads), st(kUploadBytes) / 1024.0, st(kUploadRenderPassEnds),
-            st(kTextureLoads), st(kTextureLoadDispatches), st(kTextureLoadBytes) / 1024.0,
-            st(kResolves), st(kEdramDumps), st(kRtTransferDraws),
-            st(kClearAttachments) + st(kClearColorImage) + st(kCopyBufferToImage),
-            r.category_ns[0] / 1e6, r.category_ns[1] / 1e6, r.category_ns[2] / 1e6,
-            r.category_ns[3] / 1e6, r.category_ns[4] / 1e6);
-        prev_end = r.gpu_end_ns;
-        ++frames;
-      }
-      std::fflush(f);
-    }
+    GpuFramePump();
   }
 }
 
 }  // namespace
+
+void GpuFramePump() {
+  std::lock_guard<std::mutex> guard(g_pump_mutex);
+  if (!g_take) return;
+  static FrameRecord records[64];
+  size_t n;
+  bool wrote = false;
+  while ((n = g_take(records, std::size(records))) != 0) {
+    for (size_t i = 0; i < n; ++i) {
+      const FrameRecord& r = records[i];
+      WorldRateOnGpuFrame(r.frame, double(r.busy_ns) / 1e6);
+      if (g_csv) {
+        WriteCsvRow(r);
+        wrote = true;
+      }
+    }
+  }
+  if (wrote) std::fflush(g_csv);
+}
+
+bool GpuFrameTimingEnable() {
+  static std::once_flag once;
+  static bool available = false;
+  std::call_once(once, [] {
+    auto enable = reinterpret_cast<EnableFn>(GpuPluginSymbol("rex_gpu_frame_timing_enable"));
+    auto take = reinterpret_cast<TakeFn>(GpuPluginSymbol("rex_gpu_take_frame_records"));
+    if (!enable || !take) {
+      REXLOG_WARN("gpu frame timing: the xenos plugin lacks patch 0006 (run scripts/build_sdk.sh)");
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> guard(g_pump_mutex);
+      g_take = take;
+    }
+    enable();
+    available = true;
+  });
+  return available;
+}
 
 // Called by perf_hooks.cpp on every VdSwap; starts the log once the plugin is loaded.
 void GpuFrameLogOnSwap() {
   static std::atomic<bool> started{false};
   if (started.load(std::memory_order_relaxed)) return;
   static const std::string path = REXCVAR_GET(gpu_frame_csv);
-  if (path.empty()) {
-    started = true;
-    return;
-  }
   started = true;
-  auto enable = reinterpret_cast<EnableFn>(GpuPluginSymbol("rex_gpu_frame_timing_enable"));
-  auto take = reinterpret_cast<TakeFn>(GpuPluginSymbol("rex_gpu_take_frame_records"));
-  if (!enable || !take) {
-    REXLOG_WARN("gpu_frame_csv: the xenos plugin lacks patch 0006 (run scripts/build_sdk.sh)");
+  if (path.empty() || !GpuFrameTimingEnable()) {
     return;
   }
   FILE* f = std::fopen(path.c_str(), "w");
@@ -161,13 +202,16 @@ void GpuFrameLogOnSwap() {
                "upload_rp_ends,tex_loads,tex_dispatches,tex_kb,resolves,edram_dumps,"
                "rt_transfer_draws,clears_and_image_copies,dump_ms,resolve_ms,texload_ms,transfer_ms,"
                "upload_ms\n");
-  enable();
+  {
+    std::lock_guard<std::mutex> guard(g_pump_mutex);
+    g_csv = f;
+  }
   if (REXCVAR_GET(gpu_frame_categories)) {
     if (auto categories =
             reinterpret_cast<EnableFn>(GpuPluginSymbol("rex_gpu_category_timing_enable"))) {
       categories();
     }
   }
-  std::thread(WriterThread, take, f).detach();
+  std::thread(CsvThread).detach();
   REXLOG_INFO("gpu_frame_csv: writing per-frame GPU times to {}", path);
 }

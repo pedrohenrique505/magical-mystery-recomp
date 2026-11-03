@@ -90,6 +90,27 @@
 - **Worse stretch:** capture `build/capI.mp4` 1:07-1:10 shows the venue updating only every third frame (26-30 distinct frames/s); the user saw it as a drop to 20-25 fps. Not yet tied to a guest/GPU cause.
 - **Half-rate venue explained (2026-11-02):** the engine emulates a film frame rate for the world. `ProcCounter::ProcCommands` (guest `0x8241BFC0`, counter at `TheRnd+0x118`) tells `Rnd::BeginDrawing` what to process each frame (1 world, 2 post, 4 chars, 7 all); here it is adaptive, with a cycle of `round(120 / emulate_fps)` half-frames, where `emulate_fps` is `RndPostProc::sCurrent+0x158` (`sCurrent` pointer at `0x82ACC198`). Gameplay uses 30.0 (venue every other frame; ~24 would alternate 2/3-frame cycles); menus and the intro use 0 (full rate). Values from about 34 up give full rate, so there is no intermediate setting. The cycle counts rendered frames, not time (only the constant `emulate_fps` is read, never the measured rate), so when the game drops frames the venue drops proportionally: 45 fps in gameplay means a ~22.5 fps venue, and a late frame that was due to bring a new venue image holds the old one for 3 vsyncs. World animation still advances by accumulated real time (`WorldDir::AccumulateDeltas`/`ExtendDeltas` in the RB3 decomp), so motion gets coarser, not slower. `--full_rate_world` (`project/src/world_rate_hooks.cpp`, a `[[entrypoint.midasm_hook]]`) returns 7 every frame; every change of `emulate_fps` is logged as `world_rate:`.
 - **A/B on "Sgt. Pepper" (user, AC power):** original: guest 57.0 fps mean, 26% of windows < 55, GPU 84%, 37.4 distinct frames/s on screen. `--full_rate_world`: guest 43.5 fps, 94% of windows < 55, GPU 97% (≥ 95% in 96% of windows), 42.7 distinct frames/s. Full rate shows more distinct frames but drags the note highway down to ~43 fps; the GPU cannot draw the venue every frame on this iGPU. Off by default. User: both felt very similar; full rate looked smoother in light scenes but does not hold through the song.
+- **Adaptive full-rate venue (2026-11-02, `--full_rate_world_adaptive`, on by default with
+  `--full_rate_world` and with the PC Settings toggle):** `world_rate_hooks.cpp` forces full
+  rate only while it fits: it drains the per-frame GPU times of patch 0006 itself
+  (`GpuFrameTimingEnable`/`GpuFramePump` in `gpu_frame_log.cpp`) and drops to the engine's
+  cadence when 2 of the last 8 frames go over `--full_rate_world_budget_ms` (16.5; 15 was
+  too strict: CPU and GPU overlap, so frames up to ~16.5 ms of GPU still make vsync) of GPU time,
+  or over 20 ms while the GPU is within 3 ms of the budget. At the engine's cadence the frames
+  that draw the venue cost what a full-rate frame would, so it returns once those stay 1.5 ms
+  under the budget for 0.5 s; the hold before a retry starts at 1 s and doubles up to 8 s
+  when full rate gives up within 2 s. `world_rate: adaptive ...` lines log every switch and a
+  10 s summary. Intro/menus: stays at full rate (GPU ~7 ms). Gameplay (user, budget 15):
+  58.2 fps mean / 7% of windows < 55 vs 52.8 / 55% for always-full, but full rate only ~15%
+  of the time; with the venue detail cuts of KI-18 and budget 16.5 it holds 60 (see KI-18).
+- **Random slow stretch in the intro (seen 2026-11-02, not understood):** in some runs the
+  Bink intro runs at ~48 fps for 20-30 s (seen with and without `--full_rate_world`, with and
+  without `--occlusion_query_enable`, not in two other runs). GPU work per frame stays ~6.6 ms,
+  but each frame then has 4 submissions instead of 3 and spans ~31 ms of GPU timeline: the
+  command thread stalls mid-frame. Not yet seen in gameplay. Note: every guest occlusion query
+  on Vulkan is a full GPU sync in the SDK (`EndGuestOcclusionQuery`: `EndSubmission` +
+  `AwaitAllQueueOperationsCompletion`); xenia-edge 3d233a5b2 made that asynchronous, a port to
+  consider if gameplay uses queries.
 - **GPU command counters (2026-11-02, patch 0003):** `scripts/build_sdk.sh` now also rebuilds the xenos plugin (the Vulkan backend lives there, not in `librexruntime`); `REXGLUE_GPU_PLUGIN_DIR` (set by `scripts/run.sh`) loads it from `build/sdk-lib`. `--perf_log` adds `gpu cmds:` totals per 2 s. Gameplay, per frame: ~385 draws, ~154 render passes, ~416 barriers, ~195 shared-memory uploads (2.9 MB), ~106 of which end an open render pass (each upload = barrier + `vkCmdCopyBuffer` + barrier). Intro: 136 draws, 3 uploads.
 - **RGP on fbo (frame 3633, ~15.6 ms GPU, screenshots in `build/rgp/shots3/`):** render-target transfer draws (`vkCmdDraw(6,1,0,0)` from `render_target_cache.cpp`) take ~2.9 ms of real work (~18%); the game's full-screen post passes at 1280x720 are the other big items (one 1.26 ms); wavefront occupancy has near-empty stretches of ~1 ms between barriers.
 - **Upload coalescing does not help (patch 0004, `--shared_memory_upload_coalesce_kb`, default 0):** extending each upload into adjacent CPU-written pages cut uploads 195 → 28/15 per frame, render passes 154 → 84/76 and barriers 416 → 184/160 (256/1024 KB), with no glitches, but fps did not improve (mean 59.1 → 58.2/57.7, windows < 55 fps 10% → 15%) because the uploaded bytes grew 2.9 → 11.6/22 MB per frame (memcpy on the GPU command thread). In the slow windows the GPU is 85-93% busy, not saturated. Conclusion: the barrier count is not the limiter.
@@ -171,3 +192,34 @@
   keeps the 640 px 2xMSAA surface scaled and the 640 px 4xMSAA post passes, the 560 px surface
   and everything ≤320 px native - the best sharp 2x1 so far (56.2 fps), still short of a
   stable 60.
+
+## KI-18 — The full-rate venue costs ~16.6 ms of GPU; the crowd impostors are the big item (mitigated: "60 FPS Performance")
+- **Measured (2026-11-02, `scripts/bench_song.sh`, "Sgt. Pepper", venue forced every frame,
+  2 min each, AC power):** 53.1 fps, GPU 16.6 ms per frame (p90 20.2); budget for 60 is ~14.
+  Per frame: game draws/post ~9.5 ms, RT transfers 2.6, resolves 1.3, texture loads 1.2,
+  dumps 0.4, uploads 0.25.
+- **No driver-level gain:** `RADV_DEBUG=nodcc` 17.2 ms (DCC is active and helps),
+  `RADV_DEBUG=nobinning` 16.9, `radv_enable_unified_heap_on_apu=true` 16.7. Web search: no
+  Xenia game patch or config for performance in any Rock Band title (game-patches has only
+  RB3 correctness patches), no reports of Xenia on AMD APUs.
+- **The crowd:** `WorldCrowd::DrawShowing` renders every crowd character type into a shared
+  impostor texture each frame (RB3 decomp `system/world/Crowd.cpp`), then draws billboards.
+  That render-to-texture is a fixed cost: halving the crowd (`set_fullness`, flat or 3D
+  members) changes nothing (16.5 ms), hiding it entirely saves 2.6 ms (14.0 ms, 59.6 fps but
+  the field is empty), and the impostor texture LOD (`lod` 0 = 256x512, 1 = 128x256,
+  2 = 64x128) saves 1.5 / 2.1 ms. At LOD 2 near members look blocky without depth of field.
+- **Other knobs:** no depth of field −0.6 ms; no bloom −1.0 ms (visible); character
+  self-shadows off: no change.
+- **Knobs (host cvars, read by the venue scripts at every camera shot through
+  `{pc_cfg cvar ...}`, `project/mods/venue_detail.dta` patched into
+  `world/gen/world_objects.dtb` `BandCamShot start_shot`):** `--venue_crowd_lod`,
+  `--venue_crowd_pct` (flat), `--venue_crowd_3d_pct`, `--venue_no_dof`,
+  `--venue_no_self_shadow`; post-processing, written every frame by the `ProcCommands` hook
+  (`RndPostProc` field offsets from `SyncProperty` at `0x8241DA58`): `--venue_no_bloom`,
+  `--venue_no_trails`.
+- **Result:** crowd LOD 1 + no depth of field, venue forced every frame: 58.8 fps, 14.6 ms.
+  The same with the adaptive full rate at budget 16.5 ("60 FPS Performance" in PC Settings):
+  **60.0 fps mean, minimum 2 s window 59.1, venue at full rate 61% of the time**. Budget 18:
+  70% full rate but minimum 58.5. Adaptive without the cuts ("60 FPS"): 59.9 fps but full rate
+  only 7% of the time. Not yet played by the user in this mode; the menu row was not checked
+  on screen yet.

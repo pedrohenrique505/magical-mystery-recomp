@@ -70,7 +70,7 @@ menus. Your dump is never modified; `GAME_DATA_ROOT=game scripts/run.sh` runs th
 
 | Option | Values | Notes |
 |---|---|---|
-| Full-Rate Venue (60 FPS) | on/off | draws the 3D venue every frame instead of the engine's 30 fps (~54 fps on a Vega 6) |
+| Venue | 30 FPS / 60 FPS / 60 FPS Performance | 30 FPS is the engine's own venue rate. 60 FPS draws the venue every frame while the GPU keeps up and falls back to 30 in heavy shots. Performance does the same with a lower-resolution crowd texture (impostor LOD 1) and no depth of field, which keeps the venue at 60 most of the time on a Vega 6 (KI-18) |
 | Fullscreen | on/off | |
 | Keep Aspect Ratio | on/off | off stretches the image to the window |
 | Internal Resolution | 1x, 2x, 3x | takes effect after a restart; much sharper, much slower |

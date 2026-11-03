@@ -17,10 +17,21 @@ expensive options cheaper.
 4. **Next, in order:** (a) ~~port xenia-edge 74db632 per-surface scale~~ (done, see 3)
    (`draw_resolution_scale_threshold`: small-pitch surfaces, e.g. downscaled post chains and
    shadow maps, stay 1x) to cut texture loads/resolves/transfers at scale, aiming at 2x1 at 60;
-   (b) cheap xenia-edge ports that help 1x too: 40cee11 (duplicate texture loads), fb96381
-   (render targets piling up), 3989ba3 (resolve MSAA addressing), 44f5b4a (vblank pacing);
-   (c) the full-rate venue (game-side quality passes via Ghidra and midasm hooks); then offer a
-   2x1 "Internal Resolution" choice in the menu if it holds 60.
+   (b) ~~cheap xenia-edge ports~~ (checked 2026-11-02, log.md: 40cee11 and 44f5b4a are already
+   in the SDK, 3989ba3 only touches the EDRAM-dump resolve that patches 0007/0009 mostly skip
+   and the SDK ships those shaders as SPIR-V only, fb96381 fixes render-target memory growth
+   that this game, with its fixed EDRAM bases, shows no sign of);
+   (c) ~~full-rate venue~~: adaptive mode plus venue detail cuts (KI-18): PC Settings "Venue:
+   60 FPS Performance" holds 60.0 fps with the venue at full rate 61% of the time.
+   **To do:** check the new "Venue:" row on screen (Options > PC Settings) and have the user
+   play a song in Performance mode (are the 30/60 switches visible?); then consider cheaper
+   bloom (−1 ms), crowd LOD only in shots where the crowd is far, and the remaining full-rate
+   time (budget 18 gave 70% at a small fps cost).
+   **Benchmarks are unattended now:** `scripts/bench_song.sh <label> [args]` (virtual gamepad,
+   60 s of gameplay) and `scripts/bench_summary.py <labels>`; the machine must be left alone
+   (game visible and focused). The built-in menu sequence is slow (user: "agonizing"): have
+   the user record their own navigation once with `scripts/record_pad.py`, which
+   bench_song.sh then replays at their speed.
 5. **Menu polish (small):** localized strings for the other languages; maybe a "restart now"
    action for restart-only settings.
 

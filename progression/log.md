@@ -249,3 +249,47 @@
   sets threshold 640 with MSAA mask 5. A setting can now write several cvars at startup
   (`Setting::to_cvars` in `project/src/pc_settings.cpp`).
 
+
+## 2026-11-02 (late night) — xenia-edge port review; adaptive full-rate venue
+
+- Reviewed the "cheap" xenia-edge ports from next-steps: **40cee11** (duplicate texture loads)
+  is already in the SDK (`TextureCache::RequestTextures` dedups pending loads); **44f5b4a**
+  (vblank on a deadline) too (the SDK's `GPU VSync` thread advances `last_frame_time` by whole
+  intervals and catches up); **3989ba3** (MSAA resolve address reuse) changes `resolve.xesli`,
+  which the SDK only ships as precompiled SPIR-V, for the EDRAM-dump resolve path that the
+  direct resolve now skips for ~90% of resolves: not worth it; **fb96381** (render targets
+  piling up when surfaces move between EDRAM bases) fixes memory growth, not frame time, and
+  this game uses fixed bases (0, 608, 1328). No other recent edge commit targets this game's
+  costs cheaply (a766c62c7's compute texture blit helps NVIDIA at scale; bfca9b2d9 and
+  b308af27c are CPU-side, and the game is GPU-bound).
+- **Adaptive full-rate venue** (`--full_rate_world_adaptive`, default on): the
+  `ProcCommands` hook reads per-frame GPU times (patch 0006 records, now drained by a shared
+  pump in `gpu_frame_log.cpp` so the CSV and the controller can both use them) and forces
+  full rate only while frames fit; heavy shots fall back to the engine's 30 fps cadence
+  instead of dragging the note highway below 60 (KI-14). The PC Settings toggle gets it
+  automatically. Intro smoke test: full rate held, 60 fps. Gameplay A/B pending (user).
+- First version also dropped on slow frame intervals alone and tripped in the intro, where a
+  random ~48 fps stretch has a light GPU (KI-14 note); intervals now count only with GPU time
+  near the budget.
+
+## 2026-11-02 (night, later) — Unattended benchmarks; venue at 60 with "Performance" mode
+
+- User A/B of the adaptive full rate (budget 15): 58.2 fps / 7% of windows < 55 vs 52.8 /
+  55% always-full, but full rate only ~15% of the time. Focus stays on a stable 60.
+- **Unattended benchmarks:** `scripts/virtual_pad.py` (uinput Xbox 360 pad, SDL sees it as a
+  controller) and `scripts/bench_song.sh` drive the menus into Quickplay > "Sgt. Pepper"
+  (guitar, easy, no-fail), measure 2 min with `--perf_log` and `--gpu_frame_csv`, optionally
+  take screenshots, and close the game; `scripts/bench_summary.py` compares runs. The ImGui
+  debug overlay bind (F3) is disabled during runs (it skews painting, KI-14).
+- Research (two sub-agents): no Rock Band performance patches or Xenia configs exist; RADV
+  env vars measured with no gain. In the game's scripts and the RB3 decomp: crowd density/LOD
+  per camera shot (`BandCamShot start_shot`), depth of field, self-shadows, `RndPostProc`
+  stages (offsets for this build from `SyncProperty` at `0x8241DA58`).
+- Measured (KI-18): the crowd impostor render-to-texture is a fixed ~2.6 ms per frame; its
+  texture LOD 1 saves 1.5 ms, no depth of field 0.6 ms; crowd count, self-shadows and RADV
+  options do nothing.
+- `--venue_*` cvars read by a new venue script mod (`project/mods/venue_detail.dta`, via a new
+  `{pc_cfg cvar <name>}` command) and by the `ProcCommands` hook (bloom, trails).
+- PC Settings: the venue row cycles "30 FPS / 60 FPS / 60 FPS Performance" (one setting now
+  writes several cvars live). Adaptive budget 15 → 16.5 ms. Performance mode: 60.0 fps mean,
+  min 59.1, full rate 61%; "60 FPS" alone: full rate 7%.

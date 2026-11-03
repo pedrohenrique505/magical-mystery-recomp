@@ -7,7 +7,8 @@
 ; adjust_audio). Values live on the host: {pc_cfg ...} is handled by
 ; project/src/pc_settings.cpp.
 ;
-;   doubly.btn        [x] Full-Rate Venue (60 FPS)   full_rate_world
+;   doubly.btn        Venue: 30 FPS / 60 FPS / 60 FPS Performance   full_rate_world
+;                                                    (cycle; checkbox hidden)
 ;   bass_boost.btn    [x] Fullscreen                 fullscreen
 ;   overscan.btn      [x] Keep Aspect Ratio          letterbox
 ;   subtitles.btn     Internal Resolution: 1x / 2x Horizontal / 2x / 3x
@@ -24,7 +25,8 @@
       (focus doubly.btn)
       (enter
          {gameplay_options.lbl set text_token pc_settings}
-         {doubly.btn set text_token pc_full_rate_world}
+         {checkbox01.mesh set_showing FALSE}
+         {doubly_check.mesh set_showing FALSE}
          {bass_boost.btn set text_token pc_fullscreen}
          {overscan.btn set text_token pc_letterbox}
          {checkbox04.mesh set_showing FALSE}
@@ -36,13 +38,13 @@
          ($new_focus)
          {switch
             $new_focus
-            ((doubly.btn bass_boost.btn overscan.btn)
+            ((bass_boost.btn overscan.btn)
                {helpbar set_config ((cancel helpbar_back) (confirm helpbar_toggleoption))})
             {helpbar set_config ((cancel helpbar_back) (confirm helpbar_changesetting))}})
       (SELECT_MSG
          {switch
             $component
-            (doubly.btn {pc_cfg toggle full_rate_world})
+            (doubly.btn {pc_cfg cycle full_rate_world})
             (bass_boost.btn {pc_cfg toggle fullscreen})
             (overscan.btn {pc_cfg toggle letterbox})
             (subtitles.btn {pc_cfg cycle resolution_scale})
@@ -50,7 +52,14 @@
             (adjust_audio.btn {pc_cfg cycle antialiasing})}
          {$this update_all})
       (update_all
-         {doubly_check.mesh set_showing {pc_cfg get full_rate_world}}
+         {doubly.btn
+            set
+            text_token
+            {switch
+               {pc_cfg get full_rate_world}
+               (1 pc_venue_60)
+               (2 pc_venue_60_performance)
+               pc_venue_30}}
          {bass_check.mesh set_showing {pc_cfg get fullscreen}}
          {overscan_check.mesh set_showing {pc_cfg get letterbox}}
          {if_else

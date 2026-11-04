@@ -25,7 +25,7 @@ The recompiled game is **playable end to end with a gamepad emulating a guitar**
 ## Not done / pending
 
 - Real USB instruments (guitar, drums, microphone for vocals): nothing implemented or tested.
-- Keyboard input: does nothing (only a real gamepad reaches the game).
+- Keyboard guitar input is configured in `scripts/run.sh`; gameplay validation is pending.
 - Title update device (`update:\`) missing (KI-2).
 - Saves/XContent, DLC, achievements, Live.
 - 4 functions still PENDING in the analysis (KI-1).

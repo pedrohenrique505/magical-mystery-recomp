@@ -43,7 +43,7 @@
 - **Symptom:** starting a song asks to "connect between one to three microphones".
 - **Cause:** the game classifies controllers by `XINPUT_CAPABILITIES.SubType` (guest `sub_823E5028`): 6 guitar, 11 bass, 8 drums, 7 and 9 other variants; anything else is a gamepad, which the game treats as a vocalist (the console headset plugs into the pad). The SDK reports every SDL pad as subtype 1.
 - **Workaround:** `--instruments` (defined in `project/src/xam_input_hooks.cpp`, default `guitar`) rewrites the subtype per player. The game only reads the subtype plus the wireless flag; no vendor check.
-- **Still open:** microphone/vocals (no capture implemented), keyboard input, drum velocity (the game reads it from the thumbsticks for subtype 8).
+- **Still open:** microphone/vocals (no capture implemented), keyboard gameplay validation, drum velocity (the game reads it from the thumbsticks for subtype 8).
 
 ## KI-10 — Guest memory shm objects leaked into /dev/shm (fixed)
 - **Symptom:** `SIGBUS` in the game at random points and, worse, the Hyprland compositor crashing with `SIGBUS` (twice on 2026-11-01, the second forced a reboot). `/dev/shm` was 80% full with 12 `xenia_memory_*` files (2.9 GB of RAM).

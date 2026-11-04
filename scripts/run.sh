@@ -42,6 +42,29 @@ export REX_RENDER_TARGET_PATH_VULKAN="${REX_RENDER_TARGET_PATH_VULKAN:-fbo}"
 # 16.7 ms of GPU work (KI-14).
 export REX_EXECUTE_UNCLIPPED_DRAW_VS_ON_CPU="${REX_EXECUTE_UNCLIPPED_DRAW_VS_ON_CPU:-true}"
 
+# Keyboard emulates a guitar alongside any connected gamepad. The game has five
+# frets; the Brazilian ABNT2 Ç key activates overdrive. Arrow keys navigate menus and Space strums.
+# Environment variables and command-line cvars can override these defaults.
+export REX_MNK_MODE="${REX_MNK_MODE:-true}"
+export REX_KEYBIND_A="${REX_KEYBIND_A:-G,Return}"
+export REX_KEYBIND_B="${REX_KEYBIND_B:-H,Escape}"
+export REX_KEYBIND_Y="${REX_KEYBIND_Y:-J}"
+export REX_KEYBIND_X="${REX_KEYBIND_X:-K}"
+export REX_KEYBIND_LEFT_SHOULDER="${REX_KEYBIND_LEFT_SHOULDER:-L}"
+export REX_KEYBIND_BACK="${REX_KEYBIND_BACK:-Semicolon,Tab}"
+export REX_KEYBIND_START="${REX_KEYBIND_START:-P}"
+export REX_KEYBIND_DPAD_UP="${REX_KEYBIND_DPAD_UP:-Space,Up}"
+export REX_KEYBIND_DPAD_DOWN="${REX_KEYBIND_DPAD_DOWN:-Down}"
+export REX_KEYBIND_DPAD_LEFT="${REX_KEYBIND_DPAD_LEFT:-Left}"
+export REX_KEYBIND_DPAD_RIGHT="${REX_KEYBIND_DPAD_RIGHT:-Right}"
+export REX_KEYBIND_LSTICK_UP="${REX_KEYBIND_LSTICK_UP:-Up}"
+export REX_KEYBIND_LSTICK_DOWN="${REX_KEYBIND_LSTICK_DOWN:-Down}"
+export REX_KEYBIND_LSTICK_LEFT="${REX_KEYBIND_LSTICK_LEFT:-Left}"
+export REX_KEYBIND_LSTICK_RIGHT="${REX_KEYBIND_LSTICK_RIGHT:-Right}"
+# Clear SDK defaults that overlap with guitar keys.
+export REX_KEYBIND_RIGHT_TRIGGER="${REX_KEYBIND_RIGHT_TRIGGER-}"
+export REX_KEYBIND_RSTICK_PRESS="${REX_KEYBIND_RSTICK_PRESS-}"
+
 # Runtime libraries rebuilt from source with patches/rexglue-sdk (scripts/build_sdk.sh)
 # take precedence over the prebuilt SDK when present.
 SDK_LIBS="$ROOT/tools/rexglue/linux-amd64/lib"

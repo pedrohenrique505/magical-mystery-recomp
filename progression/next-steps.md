@@ -111,7 +111,7 @@ Suggested order, from cheapest/most informative to most expensive.
 ## 5. Instruments (the distinguishing feature of this game)
 - [x] Let a gamepad act as guitar/bass/drums (`--instruments`, KI-9).
 - [ ] Map how the game reads guitar/bass/drums/microphone (USB HID through XInput / `XamInput*` / `XUsb*`?) and what the ReXGlue runtime already exposes.
-- [ ] Keyboard mapping: right now only a real gamepad reaches the game (check the SDK's `mnk` input driver / `input_backend`).
+- [ ] Validate the keyboard guitar mapping in menus and gameplay, including the ABNT2 Ç key.
 - [ ] Microphone capture for vocals (3-part harmonies).
 
 ## 6. Persistence and extras

@@ -293,3 +293,9 @@
 - PC Settings: the venue row cycles "30 FPS / 60 FPS / 60 FPS Performance" (one setting now
   writes several cvars live). Adaptive budget 15 → 16.5 ms. Performance mode: 60.0 fps mean,
   min 59.1, full rate 61%; "60 FPS" alone: full rate 7%.
+
+## 2026-11-03 — Keyboard guitar controls
+
+- Enabled the SDK keyboard controller in `scripts/run.sh`: G/H/J/K/L frets, Space
+  strum, ABNT2 Ç overdrive, arrow keys for menus, Enter/Escape and P.
+- Keyboard and physical gamepad share player 1; gameplay validation remains pending.

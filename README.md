@@ -96,7 +96,14 @@ scripts/profile.sh                  # perf record + host GPU load, writes build/
 
 ### Controllers and instruments
 
-Only a real gamepad reaches the game for now (the keyboard does nothing). The game decides
+Keyboard guitar controls are enabled by `scripts/run.sh`: G, H, J, K and L are the
+five frets (green through orange), Space strums, and Ç activates overdrive. Arrow
+keys navigate menus, Enter confirms, Escape goes back, and P pauses. The Ç binding
+uses the physical key in that position on a Brazilian ABNT2 keyboard. The keyboard
+and a gamepad can both control player 1. Use `--no-mnk_mode` to disable keyboard
+emulation; individual bindings can be overridden with SDK `--keybind_*` options.
+
+The game decides
 what a controller is from its XInput subtype, and a plain gamepad only counts as a vocalist
 (it then asks for a microphone), so by default every pad is presented as a guitar. To pick
 another instrument per player:
